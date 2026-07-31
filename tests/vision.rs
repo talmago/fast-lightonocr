@@ -5,8 +5,8 @@ use fast_lightonocr::Error;
 use fast_lightonocr::Result;
 use fast_lightonocr::model::ImageFeatures;
 use fast_lightonocr::model::ImageTensor;
-use fast_lightonocr::model::config::{DataType, ModelType};
 use fast_lightonocr::model::vision_encoder::{VisionConfig, VisionEncoder};
+use fast_lightonocr::model::{DataType, ModelType};
 use serde::Deserialize;
 
 fn fixture_path(name: &str) -> PathBuf {

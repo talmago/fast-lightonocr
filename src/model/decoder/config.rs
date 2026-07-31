@@ -5,8 +5,8 @@ use std::path::Path;
 use serde::{Deserialize, Deserializer};
 
 use crate::Result;
-use crate::model::config::json::load_json_file;
-use crate::model::config::{Activation, DataType, ModelType, RopeParameters};
+use crate::model::{Activation, DataType, ModelType, RopeParameters};
+use crate::util::json::load_json_file;
 
 /// Default maximum number of tokens generated in a single inference request.
 pub const DEFAULT_MAX_NEW_TOKENS: usize = 512;
@@ -175,9 +175,9 @@ pub struct DecoderConfig {
 impl DecoderConfig {
     /// Loads decoder configuration from an explicit JSON file.
     ///
-    /// The method reads `config.json` and extracts only the decoder-related
-    /// subset of nested `text_config`. Shared OCR configuration remains owned
-    /// by [`ModelConfig`](crate::model::config::ModelConfig).
+    /// The method reads `config.json`, extracts the decoder-related subset of
+    /// nested `text_config`, and copies top-level decoder inputs such as
+    /// `image_token_index`.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let envelope = load_json_file::<DecoderConfigEnvelope>(path)?;
         let mut config = envelope.text_config;

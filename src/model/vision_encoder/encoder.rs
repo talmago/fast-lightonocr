@@ -5,10 +5,9 @@ use std::path::{Path, PathBuf};
 use ort::session::Session;
 use ort::value::{TensorElementType, TensorRef, ValueType};
 
-use crate::model::{ImageFeatures, ImageTensor};
 use crate::{Error, Result};
 
-use super::VisionConfig;
+use super::{ImageFeatures, ImageTensor, VisionConfig};
 
 const VISION_INPUT_NAME: &str = "pixel_values";
 const VISION_OUTPUT_NAME: &str = "image_features";

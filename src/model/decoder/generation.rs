@@ -5,9 +5,10 @@
 //! KV-cache, generation configuration) and delegates token-selection logic to
 //! these helpers.
 
-use crate::model::Logits;
-use crate::model::decoder::GenerationConfig;
 use crate::{Error, Result};
+
+use super::config::GenerationConfig;
+use super::logits::Logits;
 
 /// Reason an autoregressive generation run stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

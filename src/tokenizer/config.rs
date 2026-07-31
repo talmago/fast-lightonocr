@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::Result;
-use crate::model::config::json::load_json_file;
+use crate::util::json::load_json_file;
 
 /// Tokenizer metadata loaded from `tokenizer_config.json`.
 ///

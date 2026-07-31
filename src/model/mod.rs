@@ -3,23 +3,17 @@
 //! This module contains the core OCR pipeline, model configuration,
 //! ONNX Runtime wrappers, and autoregressive generation.
 
-mod attention;
-pub mod config;
 pub mod decoder;
 pub mod embedding_model;
-mod image_features;
-mod image_tensor;
-mod logits;
+mod metadata;
 pub mod pipeline;
 pub mod vision_encoder;
 
 // Shared tensor/value types
-pub use attention::AttentionMask;
-pub use decoder::DecoderOutput;
+pub use decoder::{AttentionMask, DecoderOutput, Logits};
 pub use embedding_model::InputEmbeddings;
-pub use image_features::ImageFeatures;
-pub use image_tensor::ImageTensor;
-pub use logits::Logits;
+pub use metadata::{Activation, DataType, ModelType, RopeParameters, RopeType};
+pub use vision_encoder::{ImageFeatures, ImageTensor};
 
 // Vision encoder
 pub use vision_encoder::{VisionConfig, VisionEncoder};

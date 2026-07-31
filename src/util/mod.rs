@@ -1,5 +1,7 @@
 //! Shared utilities and crate-wide error handling.
 
+pub(crate) mod json;
+
 use std::path::PathBuf;
 
 /// Crate-wide result type.

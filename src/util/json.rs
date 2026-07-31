@@ -1,3 +1,5 @@
+//! JSON loading helpers for Hugging Face asset configuration files.
+
 use std::fs;
 use std::path::Path;
 

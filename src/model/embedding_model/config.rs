@@ -5,8 +5,8 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::Result;
-use crate::model::config::json::load_json_file;
-use crate::model::config::{DataType, ModelType};
+use crate::model::{DataType, ModelType};
+use crate::util::json::load_json_file;
 
 /// Configuration values required by the token embedding ONNX model.
 ///
@@ -32,8 +32,7 @@ impl EmbeddingConfig {
     /// Loads embedding configuration from an explicit JSON file.
     ///
     /// The method reads `config.json` and extracts only the embedding-related
-    /// subset of nested `text_config`. Shared OCR configuration remains owned
-    /// by [`ModelConfig`](crate::model::config::ModelConfig).
+    /// subset of nested `text_config`.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         load_json_file::<EmbeddingConfigEnvelope>(path).map(|envelope| envelope.text_config)
     }

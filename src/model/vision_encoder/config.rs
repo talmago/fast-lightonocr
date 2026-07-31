@@ -5,8 +5,8 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::Result;
-use crate::model::config::json::load_json_file;
-use crate::model::config::{Activation, DataType, ModelType, RopeParameters};
+use crate::model::{Activation, DataType, ModelType, RopeParameters};
+use crate::util::json::load_json_file;
 
 /// Vision encoder metadata nested inside `config.json`.
 ///
@@ -62,8 +62,7 @@ impl VisionConfig {
     /// Loads the vision encoder configuration from an explicit JSON file.
     ///
     /// The method reads `config.json` and extracts only the nested
-    /// `vision_config` section. Shared OCR configuration remains owned by
-    /// [`ModelConfig`](crate::model::config::ModelConfig).
+    /// `vision_config` section.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         load_json_file::<VisionConfigEnvelope>(path).map(|envelope| envelope.vision_config)
     }

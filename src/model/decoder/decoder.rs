@@ -6,13 +6,16 @@ use std::path::{Path, PathBuf};
 use ort::session::Session;
 use ort::value::{Outlet, Tensor, TensorElementType, TensorRef, ValueType};
 
+use crate::model::InputEmbeddings;
 use crate::model::embedding_model::EmbeddingModel;
-use crate::model::{AttentionMask, DecoderOutput, InputEmbeddings, Logits};
 use crate::{Error, Result};
 
+use super::attention::AttentionMask;
+use super::config::{DecoderConfig, GenerationConfig};
 use super::generation::{self, FinishReason, GenerationOutput};
-use super::kv_cache::values_per_tensor;
-use super::{DecoderConfig, GenerationConfig, KvCache, LayerCache};
+use super::kv_cache::{KvCache, LayerCache, values_per_tensor};
+use super::logits::Logits;
+use super::output::DecoderOutput;
 
 const DECODER_INPUT_EMBEDS_NAME: &str = "inputs_embeds";
 const DECODER_ATTENTION_MASK_NAME: &str = "attention_mask";

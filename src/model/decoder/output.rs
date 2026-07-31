@@ -1,7 +1,7 @@
 //! Decoder output value.
 
-use crate::model::Logits;
-use crate::model::decoder::KvCache;
+use super::kv_cache::KvCache;
+use super::logits::Logits;
 
 /// Output from a single decoder invocation.
 #[derive(Debug, Clone, Default, PartialEq)]

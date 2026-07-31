@@ -4,9 +4,9 @@ use std::process::Command;
 use fast_lightonocr::Error;
 use fast_lightonocr::Result;
 use fast_lightonocr::model::Logits;
-use fast_lightonocr::model::config::{DataType, ModelType};
 use fast_lightonocr::model::decoder::{Decoder, DecoderConfig, KvCache, LayerCache, LayerType};
 use fast_lightonocr::model::{AttentionMask, InputEmbeddings};
+use fast_lightonocr::model::{DataType, ModelType};
 use serde::Deserialize;
 
 fn fixture_path(name: &str) -> PathBuf {
