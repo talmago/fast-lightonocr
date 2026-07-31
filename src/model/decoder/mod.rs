@@ -9,8 +9,10 @@ mod config;
 mod decoder;
 mod generation;
 mod kv_cache;
+mod output;
 
 pub use config::{DecoderConfig, GenerationConfig, LayerType};
 pub use decoder::Decoder;
 pub use generation::{FinishReason, GenerationOutput};
 pub use kv_cache::{KvCache, LayerCache};
+pub use output::DecoderOutput;

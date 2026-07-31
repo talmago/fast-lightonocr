@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use ort::session::Session;
 use ort::value::{Outlet, Tensor, TensorElementType, TensorRef, ValueType};
 
-use crate::model::embedding::EmbeddingModel;
+use crate::model::embedding_model::EmbeddingModel;
 use crate::model::{AttentionMask, DecoderOutput, InputEmbeddings, Logits};
 use crate::{Error, Result};
 

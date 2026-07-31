@@ -8,6 +8,8 @@
 mod config;
 #[allow(clippy::module_inception)]
 mod embedding;
+mod output;
 
 pub use config::EmbeddingConfig;
 pub use embedding::EmbeddingModel;
+pub use output::InputEmbeddings;

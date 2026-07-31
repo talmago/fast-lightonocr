@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::Result;
 use crate::model::config::json::load_json_file;
-use crate::model::vision::VisionConfig;
+use crate::model::vision_encoder::VisionConfig;
 
 /// Top-level architecture metadata loaded from `config.json`.
 ///
