@@ -14,7 +14,7 @@
 - 📥 Built-in model download utility
 - 💻 CPU-first execution
 - 🔌 Optional dynamic loading of ONNX Runtime
-- 🐍 Planned Python bindings
+- 🐍 Python bindings with Hugging Face model download support
 
 ---
 
@@ -69,6 +69,20 @@ Available model presets:
 `LightOnOCROptions::max_new_tokens` can be set to override the value loaded
 from `generation_config.json`.
 
+Python bindings expose the same native engine:
+
+```python
+from fast_lightonocr import LightOnOCR
+
+model = LightOnOCR.from_pretrained(
+    "onnx-community/LightOnOCR-2-1B-ONNX"
+)
+
+result = model.process("receipt.jpg")
+
+print(result.text)
+```
+
 ---
 
 ## 🛠 Development
@@ -122,6 +136,13 @@ cargo clippy --all-targets --all-features
 cargo fmt
 ```
 
+### Python Bindings
+
+```bash
+cd bindings/python
+maturin develop --release
+```
+
 ### Dynamic ONNX Runtime
 
 On macOS, the recommended approach is to dynamically load ONNX Runtime.
@@ -149,11 +170,12 @@ export ORT_DYLIB_PATH=$HOME/.pyenv/versions/3.13.9/lib/python3.13/site-packages/
 - ✅ Sampling (temperature, top-p, top-k)
 - ✅ Streaming generation example
 - ✅ FP16 and Q4 model presets
+- ✅ Python bindings
 - 🚧 Generation parity and deterministic seeded generation
 - 🚧 Broader processor parity coverage
 - 🚧 Performance optimizations
 - 🚧 Native CLI
-- 🚧 Python bindings
+- 🚧 Python packaging hardening
 
 ---
 

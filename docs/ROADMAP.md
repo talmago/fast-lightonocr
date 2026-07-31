@@ -27,6 +27,8 @@ The core native inference path is in place:
 - Streaming generation API and example
 - FP16 and Q4 model preset options
 - Dynamic ONNX Runtime loading support
+- Python bindings with PyO3 and maturin
+- Python `from_pretrained()` download helper using `huggingface_hub`
 
 Existing validation covers:
 
@@ -81,15 +83,16 @@ Optimize inference without changing model outputs.
 
 # 📋 Planned Milestones
 
-## Python Bindings
+## Python Packaging Hardening
 
-Expose the Rust engine through Python.
+Broaden and polish the Python distribution.
 
 ### Deliverables
 
-- Python package
 - Python examples
-- API parity
+- API parity for generation options
+- Wheel metadata review
+- Release workflow
 
 ---
 

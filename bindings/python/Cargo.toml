@@ -1,0 +1,20 @@
+[package]
+name = "fast-lightonocr-python"
+version = "0.1.0"
+edition = "2024"
+description = "Python bindings for Fast LightOnOCR"
+license = "MIT"
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+fast-lightonocr = { path = "../.." }
+pyo3 = { version = "0.23.5", features = ["abi3-py39", "extension-module"] }
+
+[features]
+default = ["load-dynamic"]
+load-dynamic = ["fast-lightonocr/load-dynamic"]
+cuda = ["fast-lightonocr/cuda"]

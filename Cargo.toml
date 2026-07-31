@@ -9,6 +9,10 @@ publish = false
 keywords = ["ocr", "onnx", "lightonocr", "inference"]
 categories = ["computer-vision", "science"]
 
+[workspace]
+members = ["bindings/python"]
+resolver = "3"
+
 [dependencies]
 anyhow = "1.0.104"
 fastrand = "2.5.0"
