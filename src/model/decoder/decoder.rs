@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use ort::session::Session;
-use ort::value::{Outlet, Tensor, TensorElementType, ValueType};
+use ort::value::{Outlet, Tensor, TensorElementType, TensorRef, ValueType};
 
 use crate::model::embedding::EmbeddingModel;
 use crate::model::{AttentionMask, DecoderOutput, InputEmbeddings, Logits};
@@ -184,16 +184,18 @@ impl Decoder {
             validate_decoder_inputs(input_embeddings, attention_mask, kv_cache, &self.config)?;
 
         let (batch_size, sequence_length, hidden_size) = input_embeddings.shape();
-        let input_embeddings_tensor = Tensor::from_array((
-            [batch_size, sequence_length, hidden_size],
-            input_embeddings.as_slice().to_vec(),
-        ))
-        .map_err(|source| Error::DecoderTensorCreation { source })?;
-        let attention_mask_tensor = Tensor::from_array((
-            [batch_size, total_sequence_length],
-            attention_mask.as_slice().to_vec(),
-        ))
-        .map_err(|source| Error::DecoderTensorCreation { source })?;
+        let input_embeddings_shape = [
+            batch_size as i64,
+            sequence_length as i64,
+            hidden_size as i64,
+        ];
+        let input_embeddings_tensor =
+            TensorRef::from_array_view((input_embeddings_shape, input_embeddings.as_slice()))
+                .map_err(|source| Error::DecoderTensorCreation { source })?;
+        let attention_mask_shape = [batch_size as i64, total_sequence_length as i64];
+        let attention_mask_tensor =
+            TensorRef::from_array_view((attention_mask_shape, attention_mask.as_slice()))
+                .map_err(|source| Error::DecoderTensorCreation { source })?;
 
         let mut inputs = ort::inputs! {
             DECODER_INPUT_EMBEDS_NAME => input_embeddings_tensor,
@@ -210,17 +212,17 @@ impl Decoder {
         }
 
         let cache_shape = [
-            kv_cache.batch_size(),
-            kv_cache.num_key_value_heads(),
-            kv_cache.past_sequence_length(),
-            kv_cache.head_dim(),
+            kv_cache.batch_size() as i64,
+            kv_cache.num_key_value_heads() as i64,
+            kv_cache.past_sequence_length() as i64,
+            kv_cache.head_dim() as i64,
         ];
         for (layer_index, layer) in kv_cache.layers().iter().enumerate() {
-            let key_tensor = Tensor::from_array((cache_shape, layer.key().to_vec()))
+            let key_tensor = TensorRef::from_array_view((cache_shape, layer.key()))
                 .map_err(|source| Error::DecoderTensorCreation { source })?;
             inputs.push((Cow::from(past_key_name(layer_index)), key_tensor.into()));
 
-            let value_tensor = Tensor::from_array((cache_shape, layer.value().to_vec()))
+            let value_tensor = TensorRef::from_array_view((cache_shape, layer.value()))
                 .map_err(|source| Error::DecoderTensorCreation { source })?;
             inputs.push((Cow::from(past_value_name(layer_index)), value_tensor.into()));
         }
