@@ -1,0 +1,13 @@
+{
+  "bos_token": {
+    "content": "<s>",
+    "single_word": false,
+    "lstrip": false,
+    "rstrip": false,
+    "normalized": false
+  },
+  "eos_token": "</s>",
+  "pad_token": "<pad>",
+  "unk_token": "<unk>",
+  "additional_special_tokens": []
+}

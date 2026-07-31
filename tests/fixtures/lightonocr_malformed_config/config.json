@@ -1,0 +1,3 @@
+{
+  "architectures": ["LightOnOcrForConditionalGeneration"],
+  "model_type": "lighton_ocr",
