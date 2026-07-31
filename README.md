@@ -146,9 +146,13 @@ export ORT_DYLIB_PATH=$HOME/.pyenv/versions/3.13.9/lib/python3.13/site-packages/
 - ✅ ONNX model execution
 - ✅ Image preprocessing
 - ✅ Autoregressive generation
-- 🚧 Sampling (temperature, top-p, top-k)
-- 🚧 Processor accuracy improvements
+- ✅ Sampling (temperature, top-p, top-k)
+- ✅ Streaming generation example
+- ✅ FP16 and Q4 model presets
+- 🚧 Generation parity and deterministic seeded generation
+- 🚧 Broader processor parity coverage
 - 🚧 Performance optimizations
+- 🚧 Native CLI
 - 🚧 Python bindings
 
 ---

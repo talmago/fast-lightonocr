@@ -3,25 +3,54 @@
 This document tracks the remaining implementation work for **Fast LightOnOCR**.
 
 The native Rust inference pipeline is already working end to end. Remaining
-milestones focus on generation options, parity hardening, packaging, and
+milestones focus on generation hardening, parity coverage, packaging, and
 deployment surfaces.
+
+---
+
+# ✅ Completed Baseline
+
+The core native inference path is in place:
+
+- Native Rust public API
+- Tokenizer loading and text decoding
+- Processor-driven image preprocessing and prompt expansion
+- Vision encoder ONNX execution
+- Token embedding ONNX execution
+- Image-feature embedding merge
+- Decoder ONNX execution with KV-cache management
+- Greedy autoregressive generation
+- Temperature sampling
+- Top-k sampling
+- Top-p (nucleus) sampling
+- Configurable `max_new_tokens`
+- Streaming generation API and example
+- FP16 and Q4 model preset options
+- Dynamic ONNX Runtime loading support
+
+Existing validation covers:
+
+- Configuration error handling
+- Tokenizer behavior
+- Processor resize and padding behavior
+- Pixtral image-processor parity fixture
+- Vision encoder output parity
+- Embedding model output parity
+- Decoder output parity
 
 ---
 
 # 🚧 Current Milestones
 
-## Sampling
+## Generation Hardening
 
-Implement generation strategies equivalent to Hugging Face.
+Strengthen generation behavior and parity with Hugging Face.
 
 ### Planned work
 
-- Temperature sampling
-- Top-k sampling
-- Top-p (nucleus) sampling
-- Configurable generation options
-- Deterministic generation with seeded RNG
+- Deterministic generation with a public seeded-RNG option
 - Generation parity against Python
+- Additional stopping criteria and decoding option coverage
 
 ---
 
@@ -31,10 +60,9 @@ Improve preprocessing parity with the reference implementation.
 
 ### Planned work
 
-- Resize validation
-- Padding validation
 - Resolution handling
-- Additional image parity tests
+- Additional real-image parity tests
+- Edge-case validation for image sizes and aspect ratios
 
 ---
 
@@ -78,6 +106,19 @@ Provide a native CLI.
 
 ---
 
+## Packaging And Release Prep
+
+Prepare the crate for broader consumption.
+
+### Planned work
+
+- Public API review
+- Documentation polish
+- Release artifacts
+- Published examples
+
+---
+
 # 🔬 Validation Strategy
 
 Each milestone should be independently testable.
@@ -86,13 +127,13 @@ Whenever practical, correctness is verified against the official Python implemen
 
 Validation includes:
 
-- Configuration parity
-- Tokenizer parity
-- Prompt parity
-- Image processor parity
-- Tensor value comparison
-- Generated token parity
-- End-to-end OCR parity
+- ✅ Configuration error handling
+- ✅ Tokenizer parity
+- ✅ Image processor parity
+- ✅ ONNX stage tensor value comparison
+- 🚧 Prompt parity
+- 🚧 Generated token parity
+- 🚧 End-to-end OCR parity
 
 Regression tests are added throughout development to ensure future changes preserve correctness.
 
