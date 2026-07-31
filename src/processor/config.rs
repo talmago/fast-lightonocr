@@ -61,8 +61,10 @@ impl<'de> Deserialize<'de> for ProcessorConfig {
             .or(raw_image_processor.image_end_token)
             .ok_or_else(|| serde::de::Error::missing_field("image_end_token"))?;
 
-        let image_processor = raw_image_processor.config;
+        let mut image_processor = raw_image_processor.config;
         let patch_size = raw.patch_size.unwrap_or(image_processor.patch_size);
+        image_processor.patch_size = patch_size;
+        image_processor.spatial_merge_size = spatial_merge_size;
 
         Ok(Self {
             patch_size,
@@ -111,22 +113,20 @@ impl ProcessorConfig {
             }
         })?;
 
-        Ok(
-            serde_json::from_str(&contents).map_err(|source| match source.classify() {
-                serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
-                    Error::MalformedProcessorJson {
-                        path: path.clone(),
-                        source,
-                    }
+        serde_json::from_str(&contents).map_err(|source| match source.classify() {
+            serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+                Error::MalformedProcessorJson {
+                    path: path.clone(),
+                    source,
                 }
-                serde_json::error::Category::Data | serde_json::error::Category::Io => {
-                    Error::InvalidProcessorJson {
-                        path: path.clone(),
-                        source,
-                    }
+            }
+            serde_json::error::Category::Data | serde_json::error::Category::Io => {
+                Error::InvalidProcessorJson {
+                    path: path.clone(),
+                    source,
                 }
-            })?,
-        )
+            }
+        })
     }
 
     #[must_use]
@@ -196,6 +196,14 @@ pub struct ImageProcessorConfig {
     /// Patch size used by the image processor.
     pub patch_size: usize,
 
+    /// Spatial merge factor applied to the patch grid.
+    ///
+    /// This is resolved from `processor_config.json` by [`ProcessorConfig`].
+    /// Standalone image-processor deserialization defaults to `1`, matching
+    /// plain Pixtral image preprocessing without LightOnOCR merge alignment.
+    #[serde(skip, default = "default_spatial_merge_size")]
+    pub spatial_merge_size: usize,
+
     /// Resampling filter used during image resizing.
     pub resample: ResampleFilter,
 
@@ -261,6 +269,12 @@ impl ImageProcessorConfig {
         self.resample
     }
 
+    /// Returns the configured spatial merge factor.
+    #[must_use]
+    pub fn spatial_merge_size(&self) -> usize {
+        self.spatial_merge_size
+    }
+
     /// Returns the multiplicative pixel rescale factor.
     #[must_use]
     pub fn rescale_factor(&self) -> f32 {
@@ -272,6 +286,10 @@ impl ImageProcessorConfig {
     pub fn size(&self) -> &ImageSize {
         &self.size
     }
+}
+
+const fn default_spatial_merge_size() -> usize {
+    1
 }
 
 /// Target image sizing policy for the image processor.

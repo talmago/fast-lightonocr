@@ -1,6 +1,6 @@
 //! Vision feature grid computation.
 //!
-//! The image processor resizes every image to a patch-aligned resolution before
+//! The image processor resizes every image to a merge-aligned resolution before
 //! the vision encoder divides it into square patches. Neighboring patches are
 //! then merged according to the configured spatial merge factor, producing the
 //! final two-dimensional grid of image features consumed by the language model.
@@ -24,14 +24,14 @@ impl VisionGrid {
     /// Computes the vision feature grid from processed image dimensions.
     ///
     /// The supplied image dimensions must already be resized and aligned to the
-    /// vision encoder patch size.
+    /// vision encoder patch size and spatial merge factor.
     pub fn from_image_size(
         width: usize,
         height: usize,
         patch_size: usize,
         spatial_merge_size: usize,
     ) -> Result<Self> {
-        if width % patch_size != 0 || height % patch_size != 0 {
+        if !width.is_multiple_of(patch_size) || !height.is_multiple_of(patch_size) {
             return Err(Error::ImageProcessing {
                 reason: format!(
                     "image dimensions ({width}x{height}) are not divisible by patch size ({patch_size})",
@@ -42,7 +42,9 @@ impl VisionGrid {
         let patch_width = width / patch_size;
         let patch_height = height / patch_size;
 
-        if patch_width % spatial_merge_size != 0 || patch_height % spatial_merge_size != 0 {
+        if !patch_width.is_multiple_of(spatial_merge_size)
+            || !patch_height.is_multiple_of(spatial_merge_size)
+        {
             return Err(Error::ImageProcessing {
                 reason: format!(
                     "patch grid ({patch_width}x{patch_height}) is not divisible by spatial merge size ({spatial_merge_size})",

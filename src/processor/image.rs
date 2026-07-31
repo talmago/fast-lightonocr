@@ -13,10 +13,10 @@ const CHANNELS: usize = 3;
 /// Image processor for LightOnOCR vision inputs.
 ///
 /// `ImageProcessor` loads `processor_config.json` from a model directory and
-/// applies the Hugging Face Pixtral image preprocessing steps: image loading,
-/// RGB conversion, aspect-preserving resize with patch-aligned output
-/// dimensions, batch padding, rescaling, normalization, and NCHW tensor
-/// conversion.
+/// applies the Hugging Face Pixtral image preprocessing steps adapted to the
+/// LightOnOCR merged-patch contract: image loading, RGB conversion,
+/// aspect-preserving resize with merge-aligned output dimensions, rescaling,
+/// normalization, batch padding, and NCHW tensor conversion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageProcessor {
     config: ImageProcessorConfig,
@@ -50,9 +50,9 @@ impl ImageProcessor {
 
     /// Preprocesses an image batch into padded `ImageTensor`.
     ///
-    /// Every image is resized independently to a patch-aligned shape. The batch
-    /// is then padded on the bottom and right with zeros after normalization so
-    /// that all samples share one `(height, width)`.
+    /// Every image is resized independently to a merge-aligned shape. The
+    /// batch is then padded on the bottom and right with zeros after
+    /// normalization so that all samples share one `(height, width)`.
     pub fn process_images(&self, images: &[DynamicImage]) -> Result<ImageTensor> {
         if images.is_empty() {
             return Err(Error::ImageProcessing {
@@ -65,7 +65,7 @@ impl ImageProcessor {
         let mut max_width = 0;
 
         for image in images {
-            let resized = self.resize_image(&image.to_rgb8());
+            let resized = self.resize_image(&image.to_rgb8())?;
             let normalized = self.normalize_image(&resized);
             max_height = max_height.max(normalized.height);
             max_width = max_width.max(normalized.width);
@@ -89,7 +89,7 @@ impl ImageProcessor {
         ImageTensor::new(data, images.len(), CHANNELS, max_height, max_width)
     }
 
-    fn resize_image(&self, image: &RgbImage) -> RgbImage {
+    fn resize_image(&self, image: &RgbImage) -> Result<RgbImage> {
         let (target_height, target_width) = resize_output_size(
             image.height() as usize,
             image.width() as usize,
@@ -100,15 +100,15 @@ impl ImageProcessor {
             && target_height == image.height() as usize
             && target_width == image.width() as usize
         {
-            return image.clone();
+            return Ok(image.clone());
         }
 
-        image::imageops::resize(
+        Ok(image::imageops::resize(
             image,
             target_width as u32,
             target_height as u32,
             filter_type(self.config.resample),
-        )
+        ))
     }
 
     fn normalize_image(&self, image: &RgbImage) -> NormalizedImage {
@@ -151,6 +151,22 @@ fn validate_config(config: &ImageProcessorConfig) -> Result<()> {
     if config.patch_size == 0 {
         return Err(Error::UnsupportedProcessorConfiguration {
             reason: "patch_size must be greater than zero".to_owned(),
+        });
+    }
+
+    if config.spatial_merge_size == 0 {
+        return Err(Error::UnsupportedProcessorConfiguration {
+            reason: "spatial_merge_size must be greater than zero".to_owned(),
+        });
+    }
+
+    if config
+        .patch_size
+        .checked_mul(config.spatial_merge_size)
+        .is_none()
+    {
+        return Err(Error::UnsupportedProcessorConfiguration {
+            reason: "patch_size * spatial_merge_size is too large".to_owned(),
         });
     }
 
@@ -205,11 +221,18 @@ fn resize_output_size(
         resized_width = ((width as f64) / ratio).floor().max(1.0) as usize;
     }
 
-    let patch_size = config.patch_size;
+    let patch_stride = patch_grid_stride(config);
     (
-        ceil_to_multiple(resized_height, patch_size),
-        ceil_to_multiple(resized_width, patch_size),
+        ceil_to_multiple(resized_height, patch_stride),
+        ceil_to_multiple(resized_width, patch_stride),
     )
+}
+
+fn patch_grid_stride(config: &ImageProcessorConfig) -> usize {
+    config
+        .patch_size
+        .checked_mul(config.spatial_merge_size)
+        .expect("validated non-overflowing patch grid stride")
 }
 
 fn ceil_to_multiple(value: usize, factor: usize) -> usize {

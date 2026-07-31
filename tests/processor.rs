@@ -29,6 +29,15 @@ fn image_processor_from_file(path: impl AsRef<Path>) -> fast_lightonocr::Result<
     ImageProcessor::new(config.image_processor().clone())
 }
 
+fn pixtral_image_processor_from_file(
+    path: impl AsRef<Path>,
+) -> fast_lightonocr::Result<ImageProcessor> {
+    let config = ProcessorConfig::from_file(path)?;
+    let mut image_config = config.image_processor().clone();
+    image_config.spatial_merge_size = 1;
+    ImageProcessor::new(image_config)
+}
+
 #[test]
 fn loads_processor_config_from_model_directory() {
     let config =
@@ -41,13 +50,15 @@ fn loads_processor_config_from_model_directory() {
     );
     assert_eq!(config.image_processor().resample, ResampleFilter::Bicubic);
     assert_eq!(config.image_processor().patch_size, 2);
+    assert_eq!(config.image_processor().spatial_merge_size, 2);
 }
 
 #[test]
 fn converts_rgb_image_to_nchw_image_tensor() {
-    let processor =
-        image_processor_from_file(fixture_path("processor_small").join("processor_config.json"))
-            .unwrap();
+    let processor = pixtral_image_processor_from_file(
+        fixture_path("processor_small").join("processor_config.json"),
+    )
+    .unwrap();
     let image_tensor = processor.process_image(&sample_rgb_image()).unwrap();
 
     assert_eq!(image_tensor.shape(), (1, 3, 2, 2));
@@ -67,9 +78,10 @@ fn converts_rgb_image_to_nchw_image_tensor() {
 
 #[test]
 fn pads_batches_after_normalization() {
-    let processor =
-        image_processor_from_file(fixture_path("processor_small").join("processor_config.json"))
-            .unwrap();
+    let processor = pixtral_image_processor_from_file(
+        fixture_path("processor_small").join("processor_config.json"),
+    )
+    .unwrap();
     let first = sample_rgb_image();
     let second = DynamicImage::ImageRgb8(ImageBuffer::from_fn(4, 2, |_x, _y| Rgb([255, 0, 0])));
 
@@ -87,9 +99,10 @@ fn pads_batches_after_normalization() {
 
 #[test]
 fn resizes_to_patch_aligned_longest_edge() {
-    let processor =
-        image_processor_from_file(fixture_path("processor_small").join("processor_config.json"))
-            .unwrap();
+    let processor = pixtral_image_processor_from_file(
+        fixture_path("processor_small").join("processor_config.json"),
+    )
+    .unwrap();
     let image = DynamicImage::ImageRgb8(ImageBuffer::from_fn(10, 5, |_x, _y| Rgb([255, 0, 0])));
 
     let image_tensor = processor.process_image(&image).unwrap();
@@ -98,10 +111,23 @@ fn resizes_to_patch_aligned_longest_edge() {
 }
 
 #[test]
-fn loads_image_from_disk() {
+fn resizes_to_spatial_merge_aligned_longest_edge() {
     let processor =
         image_processor_from_file(fixture_path("processor_small").join("processor_config.json"))
             .unwrap();
+    let image = DynamicImage::ImageRgb8(ImageBuffer::from_fn(10, 5, |_x, _y| Rgb([255, 0, 0])));
+
+    let image_tensor = processor.process_image(&image).unwrap();
+
+    assert_eq!(image_tensor.shape(), (1, 3, 4, 4));
+}
+
+#[test]
+fn loads_image_from_disk() {
+    let processor = pixtral_image_processor_from_file(
+        fixture_path("processor_small").join("processor_config.json"),
+    )
+    .unwrap();
     let image_path = std::env::temp_dir().join(format!(
         "fast-lightonocr-processor-{}.png",
         std::process::id()
@@ -151,9 +177,10 @@ fn python_pixtral_processor_parity_when_enabled() {
         return;
     }
 
-    let processor =
-        image_processor_from_file(fixture_path("processor_small").join("processor_config.json"))
-            .unwrap();
+    let processor = pixtral_image_processor_from_file(
+        fixture_path("processor_small").join("processor_config.json"),
+    )
+    .unwrap();
     let image_path = std::env::temp_dir().join(format!(
         "fast-lightonocr-processor-python-{}.png",
         std::process::id()

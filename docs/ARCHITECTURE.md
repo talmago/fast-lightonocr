@@ -122,8 +122,9 @@ Typical operations include:
 - image loading
 - RGB conversion
 - resizing while preserving the expected aspect ratio
-- padding to the target resolution
+- alignment to `patch_size × spatial_merge_size`
 - pixel normalization
+- padding to the target batch resolution
 - conversion to an `ImageTensor`
 
 Text processing applies the LightOnOCR chat-template layout, tokenizes the
@@ -177,6 +178,9 @@ patches_y = height / patch_size
 grid_x = patches_x / spatial_merge_size
 grid_y = patches_y / spatial_merge_size
 ```
+
+The processed image dimensions are aligned to `patch_size × spatial_merge_size`
+so that both patch counts divide evenly before prompt expansion.
 
 The expanded image token sequence is:
 
