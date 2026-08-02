@@ -27,10 +27,12 @@
 Clone the repository and download the model:
 
 ```bash
-git clone https://github.com/<org>/fast-lightonocr.git
+git clone https://github.com/talmago/fast-lightonocr.git
 cd fast-lightonocr
 
-python scripts/download_model.py
+poetry -C bindings/python install --with dev --no-root
+poetry -C bindings/python run python ../../scripts/download_model.py \
+  --output-dir ../../models/lightonocr
 ```
 
 This downloads the official ONNX model into:
@@ -157,19 +159,20 @@ cargo test
 
 ```bash
 cargo clippy --all-targets --all-features
+poetry -C bindings/python run ruff check python
 ```
 
 ### Format
 
 ```bash
 cargo fmt
+poetry -C bindings/python run ruff format python
 ```
 
 ### Python Bindings
 
 ```bash
-cd bindings/python
-maturin develop --release
+poetry -C bindings/python run maturin develop --release
 ```
 
 ### Dynamic ONNX Runtime

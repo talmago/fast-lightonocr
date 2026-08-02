@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union, Literal, TypeAlias
+from typing import Literal, TypeAlias, Union
 
 from ._native import LightOnOCR as _NativeLightOnOCR
-from .parser import Table, TableCell, Document, ParserOptions, TableFormat, parse_document
+from .parser import (
+    Document,
+    ParserOptions,
+    Table,
+    TableCell,
+    TableFormat,
+    parse_document,
+)
 
-Preset: TypeAlias = Literal[
-    "default", 
-    "fp16", 
-    "q4"
-]
+Preset: TypeAlias = Literal["default", "fp16", "q4"]
 
 PathLike = Union[str, Path]
 
@@ -53,6 +56,7 @@ _ONNX_FILES = {
     ),
 }
 
+
 def _download_patterns(preset: Preset) -> list[str]:
     """Return the Hugging Face download patterns for a model preset.
 
@@ -77,14 +81,14 @@ def _download_patterns(preset: Preset) -> list[str]:
     except KeyError as exc:
         supported = ", ".join(sorted(_ONNX_FILES))
         raise ValueError(
-            f"Unknown model preset {preset!r}. "
-            f"Expected one of: {supported}."
+            f"Unknown model preset {preset!r}. Expected one of: {supported}."
         ) from exc
 
     return [
         *_REQUIRED_JSON_FILES,
         *onnx_files,
     ]
+
 
 @dataclass(frozen=True)
 class OCRResult:
@@ -119,6 +123,7 @@ class OCRResult:
         """Return the rendered OCR document."""
 
         return str(self.document)
+
 
 class LightOnOCR:
     """High-level Python interface for the Fast LightOnOCR inference engine."""
@@ -267,11 +272,4 @@ class LightOnOCR:
         )
 
 
-
-__all__ = [
-    "LightOnOCR",
-    "OCRResult",
-    "Table",
-    "TableCell",
-    "Document"
-]
+__all__ = ["LightOnOCR", "OCRResult", "Table", "TableCell", "Document"]

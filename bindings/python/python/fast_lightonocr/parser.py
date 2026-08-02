@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-import re
 from typing import Literal, TypeAlias
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 from tabulate import tabulate
-
 
 # ============================================================================
 # Configuration
@@ -25,6 +24,7 @@ TableFormat: TypeAlias = Literal[
     "rounded_grid",
     "fancy_grid",
 ]
+
 
 @dataclass(frozen=True)
 class ParserOptions:
@@ -89,10 +89,7 @@ class Table:
 
         width = max(len(row) for row in rows)
 
-        rows = [
-            row + [""] * (width - len(row))
-            for row in rows
-        ]
+        rows = [row + [""] * (width - len(row)) for row in rows]
 
         header_count = 0
 
@@ -109,11 +106,7 @@ class Table:
         body_rows = rows[header_count:]
 
         headers = [
-            "\n".join(
-                row[column]
-                for row in header_rows
-                if row[column]
-            )
+            "\n".join(row[column] for row in header_rows if row[column])
             for column in range(width)
         ]
 
@@ -129,8 +122,7 @@ class DocumentBlock(ABC):
     """Base class for parsed document blocks."""
 
     @abstractmethod
-    def render(self, options: ParserOptions) -> str:
-        ...
+    def render(self, options: ParserOptions) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -173,23 +165,12 @@ class Document:
 
     @property
     def tables(self) -> list[Table]:
-        return [
-            block.table
-            for block in self.blocks
-            if isinstance(block, TableBlock)
-        ]
+        return [block.table for block in self.blocks if isinstance(block, TableBlock)]
 
     def render(self) -> str:
-        rendered = [
-            block.render(self.options).strip()
-            for block in self.blocks
-        ]
+        rendered = [block.render(self.options).strip() for block in self.blocks]
 
-        return self.options.block_separator.join(
-            block
-            for block in rendered
-            if block
-        )
+        return self.options.block_separator.join(block for block in rendered if block)
 
 
 # ============================================================================
@@ -217,7 +198,6 @@ def parse_document(
     position = 0
 
     for match in _TABLE_RE.finditer(text):
-
         markdown = text[position : match.start()]
 
         if options.normalize_whitespace:
@@ -261,10 +241,8 @@ def _parse_table(table: Tag) -> Table:
     rows: list[list[TableCell]] = []
 
     for row in table.find_all("tr"):
-
         cells = [
-            _parse_cell(cell)
-            for cell in row.find_all(["th", "td"], recursive=False)
+            _parse_cell(cell) for cell in row.find_all(["th", "td"], recursive=False)
         ]
 
         if cells:
@@ -299,10 +277,7 @@ def _parse_cell(cell: Tag) -> TableCell:
 
 
 def _normalize_text(text: str) -> str:
-    lines = [
-        _normalize_inline_text(line)
-        for line in text.splitlines()
-    ]
+    lines = [_normalize_inline_text(line) for line in text.splitlines()]
 
     output: list[str] = []
     pending_blank = False

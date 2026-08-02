@@ -10,13 +10,10 @@ The Python package is intentionally thin:
 
 ## Setup
 
-Create and activate a virtual environment:
+Install the Python package dependencies:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install maturin
+poetry install --with dev --no-root
 ```
 
 If you are using dynamic ONNX Runtime loading, set `ORT_DYLIB_PATH` before
@@ -32,13 +29,13 @@ From the repository root:
 
 ```bash
 cd bindings/python
-maturin develop --release
+poetry run maturin develop --release
 ```
 
 Then verify the package imports:
 
 ```bash
-python -c "import fast_lightonocr"
+poetry run python -c "import fast_lightonocr"
 ```
 
 ## Build A Wheel
@@ -47,7 +44,7 @@ From the repository root:
 
 ```bash
 cd bindings/python
-maturin build --release
+poetry run maturin build --release
 ```
 
 The wheel is written under the workspace `target/wheels/` directory.
@@ -65,6 +62,13 @@ For the full workspace, including the Python binding crate:
 
 ```bash
 cargo clippy --workspace --all-targets --all-features
+```
+
+Run Python linting and formatting from `bindings/python`:
+
+```bash
+poetry run ruff check python
+poetry run ruff format python
 ```
 
 ## Python Usage
