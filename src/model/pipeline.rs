@@ -246,7 +246,7 @@ impl LightOnOCR {
     ) -> Result<OCRResult> {
         let (input_embeddings, attention_mask) = self.prepare_inputs(image, system_prompt)?;
 
-        let text_processor = self.processor.text_processor();
+        let tokenizer = self.processor.tokenizer();
         let mut stream_token_ids = Vec::new();
         let mut streamed_text = String::new();
         let mut streaming_error = None;
@@ -262,7 +262,7 @@ impl LightOnOCR {
 
                 stream_token_ids.push(token_id);
 
-                let decoded = match text_processor.decode_skip_special_tokens(&stream_token_ids) {
+                let decoded = match tokenizer.decode_skip_special_tokens(&stream_token_ids) {
                     Ok(decoded) => decoded,
                     Err(error) => {
                         streaming_error = Some(error);
@@ -367,7 +367,7 @@ impl LightOnOCR {
     fn decode_result(&self, generated: GenerationOutput) -> Result<OCRResult> {
         let text = self
             .processor
-            .text_processor()
+            .tokenizer()
             .decode_skip_special_tokens(generated.token_ids())?;
 
         Ok(OCRResult::new(text, generated))

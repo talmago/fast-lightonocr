@@ -5,11 +5,11 @@ build-backend = "maturin"
 [project]
 name = "fast-lightonocr"
 version = "0.1.0"
-description = "Python bindings for the native Rust Fast LightOnOCR inference engine"
+description = "Python bindings for the native Rust LightOnOCR2-1B inference engine"
 readme = "../../README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Fast LightOnOCR contributors" }]
+authors = [{ name = "Tal Almagor", email = "almagoric@gmail.com" }]
 dependencies = [
     "beautifulsoup4>=4.12",
     "huggingface-hub>=0.23",
@@ -29,8 +29,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/fast-lightonocr/fast-lightonocr"
-Repository = "https://github.com/fast-lightonocr/fast-lightonocr"
+Homepage = "https://github.com/talmago/fast-lightonocr"
+Repository = "https://github.com/talmago/fast-lightonocr"
 
 [tool.maturin]
 bindings = "pyo3"

@@ -69,9 +69,9 @@ impl Message {
 /// Multimodal text processor.
 ///
 /// The text processor owns the model tokenizer and is responsible for
-/// rendering the chat template, tokenizing the prompt, expanding image
-/// placeholders into the corresponding vision-token grid, and producing
-/// model-ready input IDs.
+/// rendering the chat template and tokenizing the prompt. Image placeholder
+/// expansion is driven by the high-level [`Processor`](crate::processor::Processor),
+/// after image preprocessing has produced the corresponding vision grid.
 #[derive(Debug, Clone)]
 pub struct TextProcessor {
     tokenizer: Tokenizer,
@@ -97,27 +97,21 @@ impl TextProcessor {
         }
     }
 
-    /// Converts a multimodal conversation into model-ready input IDs.
-    pub fn process(&self, messages: &[Message], vision_grid: VisionGrid) -> Result<Vec<i64>> {
+    /// Returns the tokenizer used by this text processor.
+    #[must_use]
+    pub fn tokenizer(&self) -> &Tokenizer {
+        &self.tokenizer
+    }
+
+    /// Converts a multimodal conversation into token IDs.
+    ///
+    /// Image placeholders are left as logical placeholder tokens. The
+    /// high-level processor expands them after deriving the vision grid from
+    /// the processed image tensor.
+    pub fn process(&self, messages: &[Message]) -> Result<Vec<i64>> {
         let prompt = self.render_template(messages)?;
 
-        let input_ids = self.tokenizer.encode(&prompt)?;
-
-        self.expand_image_placeholders(&input_ids, vision_grid)
-    }
-
-    /// Decodes model token IDs into text.
-    ///
-    /// Special tokens are preserved in the returned string.
-    pub fn decode(&self, token_ids: &[i64]) -> Result<String> {
-        self.tokenizer.decode(token_ids)
-    }
-
-    /// Decodes model token IDs into text while omitting special tokens.
-    ///
-    /// This is the preferred method for decoding OCR generation output.
-    pub fn decode_skip_special_tokens(&self, token_ids: &[i64]) -> Result<String> {
-        self.tokenizer.decode_skip_special_tokens(token_ids)
+        self.tokenizer.encode(&prompt)
     }
 
     /// Renders the multimodal conversation into the model chat template.
@@ -162,7 +156,7 @@ impl TextProcessor {
     }
 
     /// Expands image placeholders into the corresponding vision token grid.
-    fn expand_image_placeholders(
+    pub(super) fn expand_image_placeholders(
         &self,
         input_ids: &[i64],
         vision_grid: VisionGrid,
@@ -214,5 +208,88 @@ impl TextProcessor {
         token_ids.push(image_end_token_id);
 
         Ok(token_ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    fn fixture_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name)
+    }
+
+    fn text_processor() -> TextProcessor {
+        let dir = fixture_path("text_processor_tokenizer");
+        let tokenizer = Tokenizer::from_files(
+            dir.join("tokenizer.json"),
+            dir.join("tokenizer_config.json"),
+            None,
+        )
+        .unwrap();
+
+        TextProcessor::new(
+            tokenizer,
+            "<|image_pad|>",
+            "<|vision_pad|>",
+            "<|vision_end|>",
+        )
+    }
+
+    #[test]
+    fn process_leaves_image_placeholder_unexpanded() {
+        let processor = text_processor();
+        let input_ids = processor.process(&[Message::user_image()]).unwrap();
+
+        let image_token_id = processor.tokenizer().token_to_id("<|image_pad|>").unwrap();
+        let image_break_token_id = processor.tokenizer().token_to_id("<|vision_pad|>").unwrap();
+        let image_end_token_id = processor.tokenizer().token_to_id("<|vision_end|>").unwrap();
+
+        assert_eq!(
+            input_ids
+                .iter()
+                .filter(|&&token_id| token_id == image_token_id)
+                .count(),
+            1
+        );
+        assert!(!input_ids.contains(&image_break_token_id));
+        assert!(!input_ids.contains(&image_end_token_id));
+    }
+
+    #[test]
+    fn expands_image_placeholder_with_vision_grid() {
+        let processor = text_processor();
+        let image_token_id = processor.tokenizer().token_to_id("<|image_pad|>").unwrap();
+        let image_break_token_id = processor.tokenizer().token_to_id("<|vision_pad|>").unwrap();
+        let image_end_token_id = processor.tokenizer().token_to_id("<|vision_end|>").unwrap();
+
+        let expanded = processor
+            .expand_image_placeholders(
+                &[42, image_token_id, 43],
+                VisionGrid {
+                    width: 2,
+                    height: 2,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            expanded,
+            [
+                42,
+                image_token_id,
+                image_token_id,
+                image_break_token_id,
+                image_token_id,
+                image_token_id,
+                image_end_token_id,
+                43,
+            ]
+        );
     }
 }

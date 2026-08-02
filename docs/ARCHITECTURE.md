@@ -110,7 +110,7 @@ It owns:
 
 - an image processor;
 - a text processor;
-- the tokenizer;
+- the tokenizer through the text processor;
 - `processor_config.json` metadata.
 
 Image preprocessing is driven by the exported `processor_config.json` and is
@@ -127,9 +127,9 @@ Typical operations include:
 - padding to the target batch resolution
 - conversion to an `ImageTensor`
 
-Text processing applies the LightOnOCR chat-template layout, tokenizes the
-rendered prompt, expands image placeholders according to the processed image
-grid, and creates the `AttentionMask`.
+Text processing applies the LightOnOCR chat-template layout and tokenizes the
+rendered prompt. The high-level processor then expands image placeholders
+according to the processed image grid and creates the `AttentionMask`.
 
 ---
 

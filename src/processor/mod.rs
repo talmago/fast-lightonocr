@@ -90,6 +90,12 @@ impl Processor {
         &self.text_processor
     }
 
+    /// Returns the tokenizer used by the text processor.
+    #[must_use]
+    pub fn tokenizer(&self) -> &Tokenizer {
+        self.text_processor.tokenizer()
+    }
+
     /// Processes a multimodal conversation into model-ready inputs.
     pub fn process(
         &self,
@@ -109,7 +115,10 @@ impl Processor {
             self.config.spatial_merge_size(),
         )?;
 
-        let input_ids = self.text_processor.process(messages, vision_grid)?;
+        let input_ids = self.text_processor.process(messages)?;
+        let input_ids = self
+            .text_processor
+            .expand_image_placeholders(&input_ids, vision_grid)?;
 
         let attention_mask = AttentionMask::ones(input_ids.len());
 
