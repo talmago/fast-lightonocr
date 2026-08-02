@@ -15,6 +15,6 @@ fast-lightonocr = { path = "../.." }
 pyo3 = { version = "0.23.5", features = ["abi3-py39", "extension-module"] }
 
 [features]
-default = ["load-dynamic"]
+default = []
 load-dynamic = ["fast-lightonocr/load-dynamic"]
 cuda = ["fast-lightonocr/cuda"]

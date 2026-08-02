@@ -23,14 +23,33 @@ document parsing.
 
 ## 📦 Installation
 
+Install with pip:
+
 ```bash
 pip install fast-lightonocr
 ```
 
-Or with Poetry:
+> **Note**
+>
+> The default build profile targets CPU execution. When installing from source,
+> the build backend automatically discovers a compatible ONNX Runtime. If
+> `ORT_DYLIB_PATH` is set, it is used directly; otherwise, the build backend
+> locates (or provisions, in the isolated build environment) a compatible ONNX
+> Runtime, validates compatibility with ONNX Runtime 1.28.x / C API level 27,
+> and configures Cargo accordingly.
+
+If you also want the Python ONNX Runtime package installed into your application
+environment, install the CPU extra:
 
 ```bash
-poetry add fast-lightonocr
+pip install "fast-lightonocr[cpu]"
+```
+
+CUDA packaging is available through a separate build profile, although CUDA
+execution is not yet fully supported:
+
+```bash
+BUILD_PROFILE=cuda pip install "fast-lightonocr[cuda]"
 ```
 
 ---
@@ -139,19 +158,32 @@ poetry install --with dev
 Install the extension in editable mode:
 
 ```bash
-maturin develop --release
+maturin develop --release --features load-dynamic
 ```
 
 Build a wheel:
 
 ```bash
-maturin build --release
+pip wheel . --wheel-dir dist
 ```
 
-When using dynamic ONNX Runtime loading, set:
+Packaged builds use the `cpu` build profile by default, which does not enable
+any Cargo features. The Python build backend locates ONNX Runtime from
+`ORT_DYLIB_PATH` or from the Python `onnxruntime` package it installs into the
+isolated build environment during source builds, and validates ONNX Runtime
+1.28.x compatibility, including C API level 27.
+
+The `load-dynamic` feature is intended for local development only. When using
+dynamic ONNX Runtime loading, set:
 
 ```bash
 export ORT_DYLIB_PATH=/path/to/libonnxruntime
+```
+
+The CUDA build profile is wired for future provider support:
+
+```bash
+BUILD_PROFILE=cuda pip install ".[cuda]"
 ```
 
 ---

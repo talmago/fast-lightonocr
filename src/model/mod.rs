@@ -27,7 +27,8 @@ pub use decoder::{
 };
 
 // High-level OCR pipeline
-pub use pipeline::{ExecutionProvider, LightOnOCR, LightOnOCROptions, OCRResult, RuntimeOptions};
+pub use crate::util::ExecutionProvider;
+pub use pipeline::{LightOnOCR, LightOnOCROptions, OCRResult, RuntimeOptions};
 
 /// Backward-compatible alias for [`vision_encoder`].
 #[deprecated(note = "use model::vision_encoder instead")]

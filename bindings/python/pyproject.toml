@@ -1,12 +1,16 @@
 [build-system]
-requires = ["maturin>=1.8,<2"]
-build-backend = "maturin"
+requires = [
+    "maturin>=1.8,<2",
+    "tomli>=1.1.0; python_version < '3.11'",
+]
+build-backend = "build.backend"
+backend-path = ["."]
 
 [project]
 name = "fast-lightonocr"
 version = "0.1.0"
 description = "Python bindings for the native Rust LightOnOCR2-1B inference engine"
-readme = "../../README.md"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Tal Almagor", email = "almagoric@gmail.com" }]
@@ -41,6 +45,14 @@ Issues = "https://github.com/talmago/fast-lightonocr/issues"
 Repository = "https://github.com/talmago/fast-lightonocr"
 Source = "https://github.com/talmago/fast-lightonocr"
 
+[project.optional-dependencies]
+cpu = [
+    "onnxruntime>=1.28,<2",
+]
+cuda = [
+    "onnxruntime-gpu>=1.28,<2",
+]
+
 [dependency-groups]
 dev = [
     "maturin>=1.8,<2",
@@ -51,7 +63,23 @@ dev = [
 bindings = "pyo3"
 module-name = "fast_lightonocr._native"
 python-source = "python"
-features = ["load-dynamic"]
+
+[tool.fast-lightonocr.build]
+default-profile = "cpu"
+
+[tool.fast-lightonocr.build-profiles.cpu]
+cargo-features = []
+runtime-distribution = "onnxruntime"
+build-requirements = [
+    "onnxruntime>=1.28,<2",
+]
+
+[tool.fast-lightonocr.build-profiles.cuda]
+cargo-features = ["cuda"]
+runtime-distribution = "onnxruntime-gpu"
+build-requirements = [
+    "onnxruntime-gpu>=1.28,<2",
+]
 
 [tool.ruff]
 line-length = 88

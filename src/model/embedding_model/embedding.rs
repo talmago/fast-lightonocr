@@ -36,6 +36,8 @@ impl EmbeddingModel {
             return Err(Error::MissingEmbeddingModel { path: model_path });
         }
 
+        crate::util::onnxruntime::ensure_compatible()?;
+
         let session = Session::builder()
             .and_then(|mut builder| builder.commit_from_file(&model_path))
             .map_err(|source| Error::EmbeddingModelLoad {

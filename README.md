@@ -20,26 +20,45 @@
 
 ## 📦 Installation
 
+### Rust
+
 > **Note**
 >
 > The crate is currently under active development and has not yet been published on crates.io.
 
-Clone the repository and download the model:
+Clone the repository:
 
 ```bash
 git clone https://github.com/talmago/fast-lightonocr.git
 cd fast-lightonocr
-
-poetry -C bindings/python install --with dev --no-root
-poetry -C bindings/python run python ../../scripts/download_model.py \
-  --output-dir ../../models/lightonocr
 ```
 
-This downloads the official ONNX model into:
+Build the library:
 
-```text
-models/lightonocr/
+```bash
+cargo build
 ```
+
+Download the official LightOnOCR model:
+
+```bash
+python scripts/download_model.py
+```
+
+### Python
+
+The project also provides Python bindings with automatic model download and
+structured document parsing.
+
+Install from PyPI:
+
+```bash
+pip install fast-lightonocr
+```
+
+For installation options, build profiles, and the complete Python API, see:
+
+- **[bindings/python/README.md](bindings/python/README.md)**
 
 ---
 
@@ -159,37 +178,37 @@ cargo test
 
 ```bash
 cargo clippy --all-targets --all-features
-poetry -C bindings/python run ruff check python
 ```
 
 ### Format
 
 ```bash
 cargo fmt
-poetry -C bindings/python run ruff format python
 ```
 
 ### Python Bindings
 
-```bash
-poetry -C bindings/python run maturin develop --release
-```
+Python bindings built with PyO3 and maturin.
 
-### Dynamic ONNX Runtime
+For installation, development, packaging, build profiles, and ONNX Runtime configuration, see:
 
-On macOS, the recommended approach is to dynamically load ONNX Runtime.
+- **[bindings/python/README.md](bindings/python/README.md)**
 
-Set the runtime library location:
+### ONNX Runtime Discovery
+
+The project supports two approaches for locating ONNX Runtime:
+
+1. **Default builds** use the ONNX Runtime configured by the selected build profile.
+2. **Dynamic loading** (enabled with the Rust `load-dynamic` feature) loads the runtime specified by the `ORT_DYLIB_PATH` environment variable.
+
+When using `load-dynamic`, configure the runtime library location before building or running the project:
 
 ```bash
 export ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib
 ```
 
-For example:
-
-```bash
-export ORT_DYLIB_PATH=$HOME/.pyenv/versions/3.13.9/lib/python3.13/site-packages/onnxruntime/capi/libonnxruntime.1.28.0.dylib
-```
+The build tooling validates that the discovered runtime is compatible with the
+version expected by the project (currently ONNX Runtime 1.28.x / C API level 27).
 
 ---
 

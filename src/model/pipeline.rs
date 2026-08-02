@@ -11,21 +11,8 @@ use super::{
 
 use crate::model::{AttentionMask, ImageFeatures, InputEmbeddings};
 use crate::processor::{Message, MessageContent, MessageRole};
+use crate::util::ExecutionProvider;
 use crate::{Error, Processor, Result};
-
-/// ONNX Runtime execution provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ExecutionProvider {
-    /// CPU execution provider.
-    #[default]
-    Cpu,
-
-    /// CUDA execution provider.
-    Cuda {
-        /// CUDA device index.
-        device_id: usize,
-    },
-}
 
 /// Runtime configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

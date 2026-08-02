@@ -1,8 +1,11 @@
 //! Shared utilities and crate-wide error handling.
 
 pub(crate) mod json;
+pub(crate) mod onnxruntime;
 
 use std::path::PathBuf;
+
+pub use onnxruntime::ExecutionProvider;
 
 /// Crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -214,6 +217,13 @@ pub enum Error {
     #[error("inference failed: {reason}")]
     Inference {
         /// Explanation of the inference failure.
+        reason: String,
+    },
+
+    /// The linked ONNX Runtime library is incompatible with this crate.
+    #[error("ONNX Runtime compatibility check failed: {reason}")]
+    OnnxRuntimeCompatibility {
+        /// Explanation of the runtime compatibility failure.
         reason: String,
     },
 

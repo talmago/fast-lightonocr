@@ -61,6 +61,8 @@ impl Decoder {
         let generation_config =
             GenerationConfig::from_file(config_dir.join(GENERATION_CONFIG_FILE))?;
 
+        crate::util::onnxruntime::ensure_compatible()?;
+
         let session = Session::builder()
             .and_then(|mut builder| builder.commit_from_file(&model_path))
             .map_err(|source| Error::DecoderModelLoad {

@@ -27,6 +27,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+!bindings/python/build/
+!bindings/python/build/*.py
 develop-eggs/
 dist/
 downloads/

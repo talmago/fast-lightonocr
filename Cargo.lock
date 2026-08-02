@@ -561,6 +561,7 @@ dependencies = [
  "anyhow",
  "fastrand",
  "image",
+ "libloading",
  "ndarray",
  "ort",
  "reqwest",
