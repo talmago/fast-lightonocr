@@ -29,6 +29,12 @@ Install with pip:
 pip install fast-lightonocr
 ```
 
+Prebuilt wheels are currently published for Linux x86_64 and macOS arm64.
+macOS x86_64/Intel wheels are not published because ONNX Runtime 1.28 does not
+provide a compatible Python wheel for that platform. Intel macOS source builds
+require a compatible ONNX Runtime library supplied explicitly with
+`ORT_DYLIB_PATH`.
+
 > **Note**
 >
 > The default build profile targets CPU execution. When installing from source,
