@@ -1,84 +1,41 @@
-# Fast LightOnOCR Python Bindings
+# fast-lightonocr
 
-Python bindings for the native Rust `fast-lightonocr` inference engine.
+> ⚡ Native Python bindings for the Rust **Fast LightOnOCR** inference engine.
 
-The Python package is intentionally thin:
+`fast-lightonocr` provides high-performance OCR for documents and images using
+Baidu's **LightOnOCR** model. Model inference runs entirely in native Rust,
+while the Python package adds automatic Hugging Face downloads and structured
+document parsing.
 
-- model inference runs in Rust;
-- packaging is handled by PyO3 and maturin;
-- Hugging Face model downloads are handled in Python through `huggingface_hub`.
+---
 
-## Setup
+## ✨ Features
 
-Install the Python package dependencies:
+- 🚀 Native Rust inference engine
+- 🧠 ONNX Runtime backend
+- 📄 OCR for documents and images
+- 📝 Structured Markdown output
+- 📊 Structured HTML table extraction
+- 🎨 Configurable table rendering
+- 🎛️ Multiple model presets (`default`, `fp16`, `q4`)
 
-```bash
-poetry install --with dev --no-root
-```
+---
 
-If you are using dynamic ONNX Runtime loading, set `ORT_DYLIB_PATH` before
-loading a model:
-
-```bash
-export ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib
-```
-
-## Editable Development Install
-
-From the repository root:
+## 📦 Installation
 
 ```bash
-cd bindings/python
-poetry run maturin develop --release
+pip install fast-lightonocr
 ```
 
-Then verify the package imports:
+Or with Poetry:
 
 ```bash
-poetry run python -c "import fast_lightonocr"
+poetry add fast-lightonocr
 ```
 
-## Build A Wheel
+---
 
-From the repository root:
-
-```bash
-cd bindings/python
-poetry run maturin build --release
-```
-
-The wheel is written under the workspace `target/wheels/` directory.
-
-## Run Rust Validation
-
-From the repository root:
-
-```bash
-cargo check --features load-dynamic
-cargo test --features load-dynamic
-```
-
-For the full workspace, including the Python binding crate:
-
-```bash
-cargo clippy --workspace --all-targets --all-features
-```
-
-Run Python linting and formatting from `bindings/python`:
-
-```bash
-poetry run ruff check python
-poetry run ruff format python
-```
-
-## Python Usage
-
-`LightOnOCR.from_pretrained()` is the single public model-loading API. It
-accepts either a Hugging Face repository ID or a path to an existing local
-model directory.
-
-For a Hugging Face model, it downloads only the configuration, tokenizer,
-processor, and ONNX files required by the selected preset:
+## 🚀 Quick Start
 
 ```python
 from fast_lightonocr import LightOnOCR
@@ -87,94 +44,122 @@ model = LightOnOCR.from_pretrained(
     "onnx-community/LightOnOCR-2-1B-ONNX",
 )
 
-result = model.process("document.png")
+result = model.process("receipt.jpg")
+```
 
+The first call downloads the required model files from Hugging Face and caches
+them locally.
+
+---
+
+## 📄 OCR Results
+
+The raw model output is available through `result.text`.
+
+```python
 print(result.text)
-print(result.clean_text)
-print(result.tables)
-print(result.token_ids)
-print(result.finish_reason)
 ```
 
-The same API loads an existing local model directory without downloading:
+The Python bindings also expose a parsed document representation that extracts
+embedded HTML tables while preserving the original document structure.
 
 ```python
-from fast_lightonocr import LightOnOCR
-
-model = LightOnOCR.from_pretrained("models/lightonocr")
-result = model.process("examples/SROIE-receipt.jpeg")
-
-print(result.clean_text)
+print(result.document)
 ```
 
-Optional arguments:
+Tables can be accessed directly:
 
 ```python
-model = LightOnOCR.from_pretrained(
-    model_id_or_path,
-    revision=None,
-    cache_dir=None,
-    local_files_only=False,
-    preset="default",
-    max_new_tokens=None,
+for table in result.tables:
+    print(table.text_rows)
+```
+
+---
+
+## 📋 Table Rendering
+
+By default, tables are rendered using ASCII borders.
+
+```python
+result = model.process(
+    "receipt.jpg",
+    table_format="grid",
 )
 ```
 
-Supported presets are:
+Markdown tables are also supported.
+
+```python
+result = model.process(
+    "receipt.jpg",
+    table_format="github",
+)
+```
+
+Any table format supported by `tabulate` may be used.
+
+---
+
+## ⚙️ Model Presets
+
+`from_pretrained()` supports three ONNX model presets.
+
+```python
+model = LightOnOCR.from_pretrained(
+    "onnx-community/LightOnOCR-2-1B-ONNX",
+    preset="q4",
+)
+```
+
+Available presets:
 
 - `default`
 - `fp16`
 - `q4`
 
-## OCR Results
-
-`result.text` is always the raw text returned by the native Rust engine.
-
-The Python wrapper also exposes pure Python post-processing:
-
-- `result.clean_text`: the full OCR text with HTML tags stripped.
-- `result.tables`: HTML tables parsed into lightweight Python objects.
-
-Post-processing runs eagerly by default. To delay it until `clean_text` or
-`tables` is accessed:
+The generation length can be overridden:
 
 ```python
-result = model.process("document.png", post_process=False)
+model = LightOnOCR.from_pretrained(
+    "...",
+    max_new_tokens=1024,
+)
 ```
 
-Each table exposes its original HTML and plain text rows:
+---
 
-```python
-for table in result.tables:
-    print(table.html)
-    print(table.text_rows)
+## 🛠 Development
+
+Install the project with Poetry:
+
+```bash
+poetry install --with dev
 ```
 
-For example, processing `examples/SROIE-receipt.jpeg` produces table rows
-similar to:
+Install the extension in editable mode:
 
-```text
-['CODE/DESC', 'PRICE', 'Disc', 'AMOUNT']
-['QTY', 'RM', '', 'RM']
-['9556939040118', 'KF MODELLING CLAY KIDDY FISH', '', '']
-['1 PC *', '9.000', '0.00', '9.00']
-['Total :', '9.00']
-['Rounding Adjustment :', '0.00']
-['Rounded Total (RM):', '9.00']
+```bash
+maturin develop --release
 ```
 
-The complete example is:
+Build a wheel:
 
-```python
-from fast_lightonocr import LightOnOCR
-
-model = LightOnOCR.from_pretrained("models/lightonocr")
-result = model.process("examples/SROIE-receipt.jpeg")
-
-print(result.text)       # Raw OCR output, including HTML tables.
-print(result.clean_text) # Raw text with HTML tags removed.
-
-for table in result.tables:
-    for row in table.text_rows:
-        print(row)
+```bash
+maturin build --release
 ```
+
+When using dynamic ONNX Runtime loading, set:
+
+```bash
+export ORT_DYLIB_PATH=/path/to/libonnxruntime
+```
+
+---
+
+## 🙏 Acknowledgements
+
+This package wraps the native Rust **Fast LightOnOCR** inference engine and
+uses the open-weight **LightOnOCR** model released by Baidu.
+
+- 🤗 https://huggingface.co/onnx-community/LightOnOCR-2-1B-ONNX
+- 💻 https://github.com/baidu/LightOnOCR
