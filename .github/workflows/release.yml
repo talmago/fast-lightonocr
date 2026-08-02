@@ -1,0 +1,243 @@
+name: Python Release
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHON_PACKAGE_DIR: bindings/python
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+
+      - name: Install Python tooling
+        run: python -m pip install --upgrade pip ruff "maturin>=1.8,<2"
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+
+      - name: Check Rust dynamic-loading build
+        run: cargo check --features load-dynamic
+
+      - name: Check Python formatting and lint
+        run: |
+          python -m ruff format --check "${PYTHON_PACKAGE_DIR}/python" "${PYTHON_PACKAGE_DIR}/build"
+          python -m ruff check "${PYTHON_PACKAGE_DIR}/python" "${PYTHON_PACKAGE_DIR}/build"
+
+      - name: Check Python build profiles
+        working-directory: ${{ env.PYTHON_PACKAGE_DIR }}
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
+          import os
+          from build import backend
+
+          os.environ.pop("ORT_DYLIB_PATH", None)
+          os.environ.pop("BUILD_PROFILE", None)
+          assert backend._profiled_config_settings(None)["maturin.build-args"] == []
+          assert "onnxruntime>=1.28,<2" in backend.get_requires_for_build_wheel(None)
+
+          os.environ["BUILD_PROFILE"] = "cuda"
+          assert backend._profiled_config_settings(None)["maturin.build-args"] == ["--features", "cuda"]
+          PY
+
+  build-sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install build frontend
+        run: python -m pip install --upgrade pip build
+
+      - name: Build source distribution
+        run: python -m build "${PYTHON_PACKAGE_DIR}" --sdist --outdir dist
+
+      - name: Upload source distribution
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-linux-wheel:
+    name: Build wheel (linux x86_64)
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          if ! command -v curl >/dev/null 2>&1; then
+            if command -v dnf >/dev/null 2>&1; then
+              dnf install -y curl
+            else
+              yum install -y curl
+            fi
+          fi
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build wheel
+        shell: bash
+        env:
+          PYTHON: /opt/python/cp311-cp311/bin/python
+          MATURIN_BUILD_ARGS: --compatibility manylinux_2_28
+        run: |
+          "${PYTHON}" -m pip install --upgrade pip
+          "${PYTHON}" -m pip wheel "${PYTHON_PACKAGE_DIR}" \
+            --no-deps \
+            --wheel-dir dist \
+            --config-settings "maturin.build-args=${MATURIN_BUILD_ARGS}"
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-wheel-linux-x86_64
+          path: dist/*.whl
+          if-no-files-found: error
+
+  build-macos-wheels:
+    name: Build wheel (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-x86_64
+            runner: macos-13
+          - name: macos-arm64
+            runner: macos-14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build wheel
+        env:
+          MATURIN_BUILD_ARGS: --compatibility pypi
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip wheel "${PYTHON_PACKAGE_DIR}" \
+            --no-deps \
+            --wheel-dir dist \
+            --config-settings "maturin.build-args=${MATURIN_BUILD_ARGS}"
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-wheel-${{ matrix.name }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  inspect-distributions:
+    name: Inspect distributions
+    runs-on: ubuntu-latest
+    needs:
+      - build-sdist
+      - build-linux-wheel
+      - build-macos-wheels
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          pattern: python-*
+          path: dist
+          merge-multiple: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Check metadata
+        run: |
+          python -m pip install --upgrade pip twine
+          python -m twine check dist/*
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs:
+      - checks
+      - inspect-distributions
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/fast-lightonocr
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          pattern: python-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

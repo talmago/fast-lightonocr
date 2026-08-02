@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHON_PACKAGE_DIR: bindings/python
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+
+      - name: Install Python tooling
+        run: python -m pip install --upgrade pip ruff "maturin>=1.8,<2"
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+
+      - name: Check Rust dynamic-loading build
+        run: cargo check --features load-dynamic
+
+      - name: Check Python formatting and lint
+        run: |
+          python -m ruff format --check "${PYTHON_PACKAGE_DIR}/python" "${PYTHON_PACKAGE_DIR}/build"
+          python -m ruff check "${PYTHON_PACKAGE_DIR}/python" "${PYTHON_PACKAGE_DIR}/build"
+
+      - name: Check Python build profiles
+        working-directory: ${{ env.PYTHON_PACKAGE_DIR }}
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
+          import os
+          from build import backend
+
+          os.environ.pop("ORT_DYLIB_PATH", None)
+          os.environ.pop("BUILD_PROFILE", None)
+          assert backend._profiled_config_settings(None)["maturin.build-args"] == []
+          assert "onnxruntime>=1.28,<2" in backend.get_requires_for_build_wheel(None)
+
+          os.environ["BUILD_PROFILE"] = "cuda"
+          assert backend._profiled_config_settings(None)["maturin.build-args"] == ["--features", "cuda"]
+          PY
+
+      - name: Build default Python wheel
+        run: python -m pip wheel "${PYTHON_PACKAGE_DIR}" --no-deps --wheel-dir dist
