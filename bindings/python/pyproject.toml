@@ -7,12 +7,13 @@ name = "fast-lightonocr"
 version = "0.1.0"
 description = "Python bindings for the native Rust LightOnOCR2-1B inference engine"
 readme = "../../README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Tal Almagor", email = "almagoric@gmail.com" }]
 dependencies = [
     "beautifulsoup4>=4.12",
     "huggingface-hub>=0.23",
+    "tabulate (>=0.10.0,<0.11.0)",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

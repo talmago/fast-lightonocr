@@ -43,6 +43,8 @@ models/lightonocr/
 
 ## 🚀 Usage
 
+### Rust
+
 ```rust
 use fast_lightonocr::{LightOnOCR, LightOnOCROptions};
 
@@ -66,10 +68,13 @@ Available model presets:
 - `LightOnOCROptions::fp16()`
 - `LightOnOCROptions::q4()`
 
-`LightOnOCROptions::max_new_tokens` can be set to override the value loaded
+`LightOnOCROptions::max_new_tokens` can be used to override the value loaded
 from `generation_config.json`.
 
-Python bindings expose the same native engine:
+### Python
+
+The Python bindings wrap the same native Rust engine and can automatically
+download model assets from Hugging Face.
 
 ```python
 from fast_lightonocr import LightOnOCR
@@ -80,7 +85,31 @@ model = LightOnOCR.from_pretrained(
 
 result = model.process("receipt.jpg")
 
+# Raw OCR output (Markdown with embedded HTML tables)
 print(result.text)
+
+# Parsed document with rendered tables
+print(result.document)
+
+# Structured table extraction
+for table in result.tables:
+    print(table.text_rows)
+```
+
+The document parser automatically extracts embedded HTML tables while preserving
+the original document order. Tables are rendered using `tabulate` and can be
+configured through the `table_format` argument:
+
+```python
+result = model.process(
+    "receipt.jpg",
+    table_format="github",   # Markdown tables
+)
+
+result = model.process(
+    "receipt.jpg",
+    table_format="grid",     # ASCII tables (default)
+)
 ```
 
 ---
