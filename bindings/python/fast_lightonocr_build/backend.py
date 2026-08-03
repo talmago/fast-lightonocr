@@ -14,6 +14,8 @@ import os
 import platform
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -57,16 +59,63 @@ class BuildProfile:
     build_requirements: tuple[str, ...]
 
 
+# def build_wheel(
+#     wheel_directory: str,
+#     config_settings: Mapping[str, Any] | None = None,
+#     metadata_directory: str | None = None,
+# ) -> str:
+#     """Build and repair a wheel using the selected runtime profile."""
+
+#     settings = _profiled_config_settings(
+#         config_settings,
+#         repair_wheel=True,
+#     )
+
+
+#     with _configured_build_environment(settings):
+#         return maturin.build_wheel(
+#             wheel_directory,
+#             settings,
+#             metadata_directory,
+#         )
 def build_wheel(
     wheel_directory: str,
     config_settings: Mapping[str, Any] | None = None,
     metadata_directory: str | None = None,
 ) -> str:
-    """Build a wheel through maturin with the selected profile configured."""
+    """Build and repair a wheel using the selected runtime profile."""
 
-    settings = _profiled_config_settings(config_settings)
+    settings = _profiled_config_settings(
+        config_settings,
+        repair_wheel=True,
+    )
+
+    args = maturin.get_maturin_pep517_args(settings)
+
+    command = [
+        "maturin",
+        "build",
+        "--interpreter",
+        sys.executable,
+        *args,
+    ]
+
     with _configured_build_environment(settings):
-        return maturin.build_wheel(wheel_directory, settings, metadata_directory)
+        print("Running:", " ".join(command), flush=True)
+
+        subprocess.run(
+            command,
+            check=True,
+            env=os.environ.copy(),
+        )
+
+        target = Path("target/wheels")
+        wheel = max(target.glob("*.whl"), key=lambda p: p.stat().st_mtime)
+
+        destination = Path(wheel_directory) / wheel.name
+        shutil.copy2(wheel, destination)
+
+        return wheel.name
 
 
 def build_editable(
@@ -76,9 +125,17 @@ def build_editable(
 ) -> str:
     """Build an editable wheel through maturin."""
 
-    settings = _profiled_config_settings(config_settings)
+    settings = _profiled_config_settings(
+        config_settings,
+        repair_wheel=False,
+    )
+
     with _configured_build_environment(settings):
-        return maturin.build_editable(wheel_directory, settings, metadata_directory)
+        return maturin.build_editable(
+            wheel_directory,
+            settings,
+            metadata_directory,
+        )
 
 
 def prepare_metadata_for_build_wheel(
@@ -180,13 +237,64 @@ class _configured_build_environment:
 
 def _profiled_config_settings(
     config_settings: Mapping[str, Any] | None,
+    *,
+    repair_wheel: bool = False,
 ) -> dict[str, Any]:
     settings = dict(config_settings or {})
     profile = _selected_profile(settings)
+
     args = maturin.get_maturin_pep517_args(settings)
     args = _merge_cargo_features(args, profile.cargo_features)
+
+    if repair_wheel and not _uses_load_dynamic(settings):
+        args = _set_maturin_option(
+            args,
+            "--auditwheel",
+            "repair",
+        )
+
+        # args = _set_maturin_option(
+        #     args,
+        #     "--compatibility",
+        #     "manylinux_2_28",
+        # )
+
     settings["maturin.build-args"] = args
     return settings
+
+
+def _set_maturin_option(
+    args: list[str],
+    option: str,
+    value: str,
+) -> list[str]:
+    """Set a maturin CLI option."""
+
+    result: list[str] = []
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+
+        if arg == option:
+            if i + 1 >= len(args):
+                raise ValueError(f"{option} was passed without a value")
+            i += 2
+            continue
+
+        if arg.startswith(f"{option}="):
+            i += 1
+            continue
+
+        if arg == "--skip-auditwheel" and option == "--auditwheel":
+            i += 1
+            continue
+
+        result.append(arg)
+        i += 1
+
+    result.extend([option, value])
+    return result
 
 
 def _selected_profile(config_settings: Mapping[str, Any] | None) -> BuildProfile:

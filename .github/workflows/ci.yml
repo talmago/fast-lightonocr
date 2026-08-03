@@ -51,7 +51,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install \
             ruff \
-            "maturin>=1.8,<2"
+            "maturin[patchelf]>=1.13,<2"
 
       #
       # Rust
@@ -78,20 +78,20 @@ jobs:
           python -m ruff format \
             --check \
             "${PYTHON_PACKAGE_DIR}/python" \
-            "${PYTHON_PACKAGE_DIR}/build"
+            "${PYTHON_PACKAGE_DIR}/fast_lightonocr_build"
 
       - name: Lint Python
         run: |
           python -m ruff check \
             "${PYTHON_PACKAGE_DIR}/python" \
-            "${PYTHON_PACKAGE_DIR}/build"
+            "${PYTHON_PACKAGE_DIR}/fast_lightonocr_build"
 
       - name: Check Python build backend
         working-directory: ${{ env.PYTHON_PACKAGE_DIR }}
         run: |
           PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
           import os
-          from build import backend
+          from fast_lightonocr_build import backend
 
           os.environ.pop("ORT_DYLIB_PATH", None)
           os.environ.pop("BUILD_PROFILE", None)
@@ -107,55 +107,27 @@ jobs:
           ]
           PY
 
-      # - name: Build Python wheel
-      #   run: |
-      #     python -m pip wheel \
-      #       "${PYTHON_PACKAGE_DIR}" \
-      #       --no-deps \
-      #       --wheel-dir dist
-
-      - name: Build Python wheel with maturin
+      - name: Build Python wheel
         working-directory: ${{ env.PYTHON_PACKAGE_DIR }}
         run: |
-          maturin build \
-            --release \
-            --out ../../dist
-      
-      - name: Inspect wheel contents
+          python -m pip wheel \
+            . \
+            --no-deps \
+            --wheel-dir dist
+
+      - name: Verify wheel installation
+        working-directory: ${{ env.PYTHON_PACKAGE_DIR }}
         run: |
-          WHEEL="$(find dist -name '*.whl' | head -n1)"
-
-          echo "Wheel:"
-          echo "  $WHEEL"
-
-          echo
-          echo "=== Wheel contents ==="
+          WHEEL="$(find dist -maxdepth 1 -name '*.whl' | head -n1)"
+          test -n "$WHEEL"
+          
           python -m zipfile -l "$WHEEL"
+          python -m venv .venv-test
+          . .venv-test/bin/activate
 
-          echo
-          echo "=== Native libraries ==="
-          python - <<'PY'
-          import pathlib
-          import tempfile
-          import zipfile
-
-          wheel = next(pathlib.Path("dist").glob("*.whl"))
-
-          with tempfile.TemporaryDirectory() as tmp:
-              with zipfile.ZipFile(wheel) as zf:
-                  zf.extractall(tmp)
-
-              for path in sorted(pathlib.Path(tmp).rglob("*")):
-                  if path.suffix in {".so", ".dylib", ".dll"}:
-                      print(path.relative_to(tmp))
-          PY
-
-      # - name: Verify wheel installation
-      #   run: |
-      #     python -m venv .venv-test
-      #     . .venv-test/bin/activate
-
-      #     python -m pip install --upgrade pip
-      #     python -m pip install dist/*.whl
-
-      #     python -c "import fast_lightonocr"
+          # Development wheels built on ubuntu-latest rely on the Python
+          # onnxruntime package rather than a bundled runtime.
+          python -m pip install --upgrade pip
+          python -m pip install "onnxruntime>=1.28,<2"
+          python -m pip install "$WHEEL"
+          python -c "import fast_lightonocr"

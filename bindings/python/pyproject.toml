@@ -1,11 +1,3 @@
-[build-system]
-requires = [
-    "maturin>=1.8,<2",
-    "tomli>=1.1.0; python_version < '3.11'",
-]
-build-backend = "build.backend"
-backend-path = ["."]
-
 [project]
 name = "fast-lightonocr"
 version = "0.1.0"
@@ -58,6 +50,14 @@ dev = [
     "maturin>=1.8,<2",
     "ruff>=0.9",
 ]
+
+[build-system]
+requires = [
+    "maturin[patchelf]>=1.13,<2",
+    "tomli>=1.1.0; python_version < '3.11'",
+]
+build-backend = "fast_lightonocr_build.backend"
+backend-path = ["."]
 
 [tool.maturin]
 bindings = "pyo3"

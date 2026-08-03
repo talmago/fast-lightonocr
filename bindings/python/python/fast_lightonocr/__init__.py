@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal, TypeAlias, Union
 
@@ -272,4 +273,9 @@ class LightOnOCR:
         )
 
 
-__all__ = ["LightOnOCR", "OCRResult", "Table", "TableCell", "Document"]
+try:
+    __version__ = version("fast-lightonocr")
+except PackageNotFoundError:
+    __version__ = "0.1.0"
+
+__all__ = ["LightOnOCR", "OCRResult", "Table", "TableCell", "Document", "__version__"]
