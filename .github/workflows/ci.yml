@@ -3,8 +3,15 @@ name: CI
 on:
   push:
     branches:
-      - "**"
+      - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -31,25 +38,54 @@ jobs:
           cache: pip
 
       - name: Set up Rust
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt
-          rustup default stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
 
       - name: Install Python tooling
-        run: python -m pip install --upgrade pip ruff "maturin>=1.8,<2"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            ruff \
+            "maturin>=1.8,<2"
+
+      #
+      # Rust
+      #
 
       - name: Check Rust formatting
         run: cargo fmt --check
 
-      - name: Check Rust dynamic-loading build
+      - name: Check Rust
         run: cargo check --features load-dynamic
 
-      - name: Check Python formatting and lint
-        run: |
-          python -m ruff format --check "${PYTHON_PACKAGE_DIR}/python" "${PYTHON_PACKAGE_DIR}/build"
-          python -m ruff check "${PYTHON_PACKAGE_DIR}/python" "${PYTHON_PACKAGE_DIR}/build"
+      - name: Test Rust
+        run: cargo test --features load-dynamic
 
-      - name: Check Python build profiles
+      - name: Lint Rust
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      #
+      # Python
+      #
+
+      - name: Check Python formatting
+        run: |
+          python -m ruff format \
+            --check \
+            "${PYTHON_PACKAGE_DIR}/python" \
+            "${PYTHON_PACKAGE_DIR}/build"
+
+      - name: Lint Python
+        run: |
+          python -m ruff check \
+            "${PYTHON_PACKAGE_DIR}/python" \
+            "${PYTHON_PACKAGE_DIR}/build"
+
+      - name: Check Python build backend
         working-directory: ${{ env.PYTHON_PACKAGE_DIR }}
         run: |
           PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
@@ -58,12 +94,31 @@ jobs:
 
           os.environ.pop("ORT_DYLIB_PATH", None)
           os.environ.pop("BUILD_PROFILE", None)
+
           assert backend._profiled_config_settings(None)["maturin.build-args"] == []
           assert "onnxruntime>=1.28,<2" in backend.get_requires_for_build_wheel(None)
 
           os.environ["BUILD_PROFILE"] = "cuda"
-          assert backend._profiled_config_settings(None)["maturin.build-args"] == ["--features", "cuda"]
+
+          assert backend._profiled_config_settings(None)["maturin.build-args"] == [
+              "--features",
+              "cuda",
+          ]
           PY
 
-      - name: Build default Python wheel
-        run: python -m pip wheel "${PYTHON_PACKAGE_DIR}" --no-deps --wheel-dir dist
+      - name: Build Python wheel
+        run: |
+          python -m pip wheel \
+            "${PYTHON_PACKAGE_DIR}" \
+            --no-deps \
+            --wheel-dir dist
+
+      # - name: Verify wheel installation
+      #   run: |
+      #     python -m venv .venv-test
+      #     . .venv-test/bin/activate
+
+      #     python -m pip install --upgrade pip
+      #     python -m pip install dist/*.whl
+
+      #     python -c "import fast_lightonocr"
