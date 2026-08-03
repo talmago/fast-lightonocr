@@ -1,10 +1,9 @@
 //! ONNX Runtime wrapper for the LightOnOCR decoder.
 
-use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use ort::session::Session;
-use ort::value::{Outlet, Tensor, TensorElementType, TensorRef, ValueType};
+use ort::session::{Session, SessionInputValue};
+use ort::value::{Outlet, TensorElementType, TensorRef, ValueType};
 
 use crate::model::InputEmbeddings;
 use crate::model::embedding_model::EmbeddingModel;
@@ -138,10 +137,11 @@ impl Decoder {
         let mut generated = Vec::with_capacity(self.generation_config.max_new_tokens);
 
         let mut kv_cache = self.empty_kv_cache(decoder_input.batch_size())?;
+        attention_mask.reserve(self.generation_config.max_new_tokens);
 
         let mut finish_reason = FinishReason::Length;
 
-        for _ in 0..self.generation_config.max_new_tokens {
+        for step in 0..self.generation_config.max_new_tokens {
             let output = self.decode(&decoder_input, &attention_mask, &kv_cache)?;
 
             kv_cache = output.kv_cache;
@@ -157,16 +157,15 @@ impl Decoder {
                 break;
             }
 
-            decoder_input = embedding_model.embed(&[next_token])?;
+            if step + 1 == self.generation_config.max_new_tokens {
+                break;
+            }
 
-            attention_mask = AttentionMask::ones(
-                kv_cache
-                    .past_sequence_length()
-                    .checked_add(decoder_input.sequence_length())
-                    .ok_or_else(|| Error::Inference {
-                        reason: "attention mask length is too large".to_owned(),
-                    })?,
-            );
+            decoder_input = embedding_model.embed(&[next_token])?;
+            if step == 0 {
+                attention_mask.fill_visible();
+            }
+            attention_mask.push_visible();
         }
 
         Ok(GenerationOutput::new(generated, finish_reason))
@@ -201,19 +200,18 @@ impl Decoder {
         let attention_mask_tensor =
             TensorRef::from_array_view((attention_mask_shape, attention_mask.as_slice()))
                 .map_err(|source| Error::DecoderTensorCreation { source })?;
+        let use_cache_branch_value = [!kv_cache.is_empty()];
 
-        let mut inputs = ort::inputs! {
-            DECODER_INPUT_EMBEDS_NAME => input_embeddings_tensor,
-            DECODER_ATTENTION_MASK_NAME => attention_mask_tensor,
-        };
+        let mut inputs =
+            Vec::with_capacity(decoder_input_count(&self.config, self.has_cache_branch));
+        inputs.push(SessionInputValue::from(input_embeddings_tensor));
+        inputs.push(SessionInputValue::from(attention_mask_tensor));
 
         if self.has_cache_branch {
-            let use_cache_branch = Tensor::from_array(((), vec![!kv_cache.is_empty()]))
-                .map_err(|source| Error::DecoderTensorCreation { source })?;
-            inputs.push((
-                Cow::from(DECODER_USE_CACHE_BRANCH_NAME),
-                use_cache_branch.into(),
-            ));
+            let use_cache_branch_tensor =
+                TensorRef::from_array_view(((), use_cache_branch_value.as_slice()))
+                    .map_err(|source| Error::DecoderTensorCreation { source })?;
+            inputs.push(SessionInputValue::from(use_cache_branch_tensor));
         }
 
         let cache_shape = [
@@ -222,19 +220,19 @@ impl Decoder {
             kv_cache.past_sequence_length() as i64,
             kv_cache.head_dim() as i64,
         ];
-        for (layer_index, layer) in kv_cache.layers().iter().enumerate() {
+        for layer in kv_cache.layers() {
             let key_tensor = TensorRef::from_array_view((cache_shape, layer.key()))
                 .map_err(|source| Error::DecoderTensorCreation { source })?;
-            inputs.push((Cow::from(past_key_name(layer_index)), key_tensor.into()));
+            inputs.push(SessionInputValue::from(key_tensor));
 
             let value_tensor = TensorRef::from_array_view((cache_shape, layer.value()))
                 .map_err(|source| Error::DecoderTensorCreation { source })?;
-            inputs.push((Cow::from(past_value_name(layer_index)), value_tensor.into()));
+            inputs.push(SessionInputValue::from(value_tensor));
         }
 
         let mut outputs = self
             .session
-            .run(inputs)
+            .run(inputs.as_slice())
             .map_err(|source| Error::DecoderInference { source })?;
 
         let logits_output =
@@ -301,12 +299,16 @@ fn config_dir_for_model(model_path: &Path) -> Result<PathBuf> {
         })
 }
 
+fn decoder_input_count(config: &DecoderConfig, has_cache_branch: bool) -> usize {
+    2 + usize::from(has_cache_branch) + config.num_hidden_layers * 2
+}
+
 fn validate_session_contract(session: &Session, config: &DecoderConfig) -> Result<bool> {
     let inputs = session.inputs();
     let has_cache_branch = inputs
         .iter()
         .any(|input| input.name() == DECODER_USE_CACHE_BRANCH_NAME);
-    let expected_input_count = 2 + config.num_hidden_layers * 2 + usize::from(has_cache_branch);
+    let expected_input_count = decoder_input_count(config, has_cache_branch);
     if inputs.len() != expected_input_count {
         return Err(Error::InvalidDecoderModel {
             reason: format!(
@@ -316,6 +318,7 @@ fn validate_session_contract(session: &Session, config: &DecoderConfig) -> Resul
         });
     }
 
+    validate_decoder_input_order(inputs, config, has_cache_branch)?;
     validate_named_tensor(
         inputs,
         DECODER_INPUT_EMBEDS_NAME,
@@ -391,6 +394,49 @@ fn validate_session_contract(session: &Session, config: &DecoderConfig) -> Resul
     }
 
     Ok(has_cache_branch)
+}
+
+fn validate_decoder_input_order(
+    inputs: &[Outlet],
+    config: &DecoderConfig,
+    has_cache_branch: bool,
+) -> Result<()> {
+    validate_input_at(inputs, 0, DECODER_INPUT_EMBEDS_NAME)?;
+    validate_input_at(inputs, 1, DECODER_ATTENTION_MASK_NAME)?;
+
+    let mut index = 2;
+    if has_cache_branch {
+        validate_input_at(inputs, index, DECODER_USE_CACHE_BRANCH_NAME)?;
+        index += 1;
+    }
+
+    for layer_index in 0..config.num_hidden_layers {
+        validate_input_at(inputs, index, &past_key_name(layer_index))?;
+        index += 1;
+        validate_input_at(inputs, index, &past_value_name(layer_index))?;
+        index += 1;
+    }
+
+    Ok(())
+}
+
+fn validate_input_at(inputs: &[Outlet], index: usize, expected: &str) -> Result<()> {
+    let actual = inputs
+        .get(index)
+        .ok_or_else(|| Error::InvalidDecoderModel {
+            reason: format!("missing decoder input #{index}, expected `{expected}`"),
+        })?
+        .name();
+
+    if actual != expected {
+        return Err(Error::InvalidDecoderModel {
+            reason: format!(
+                "decoder input #{index} is `{actual}`, expected `{expected}`; positional execution depends on ONNX input order"
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 fn validate_named_tensor(

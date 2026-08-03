@@ -22,6 +22,21 @@ impl AttentionMask {
         }
     }
 
+    /// Reserves room for additional mask values.
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        self.mask.reserve(additional);
+    }
+
+    /// Marks every existing position as visible.
+    pub(crate) fn fill_visible(&mut self) {
+        self.mask.fill(1);
+    }
+
+    /// Appends one visible position to the mask.
+    pub(crate) fn push_visible(&mut self) {
+        self.mask.push(1);
+    }
+
     /// Returns the attention mask as a read-only slice.
     pub fn as_slice(&self) -> &[i64] {
         &self.mask
