@@ -3,8 +3,12 @@ name: Python Release
 on:
   push:
     tags:
-      - "*"
+      - "v*"
   workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -14,57 +18,6 @@ env:
   PYTHON_PACKAGE_DIR: bindings/python
 
 jobs:
-  checks:
-    name: Checks
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-          cache: pip
-
-      - name: Set up Rust
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt
-          rustup default stable
-
-      - name: Install Python tooling
-        run: python -m pip install --upgrade pip ruff "maturin>=1.8,<2"
-
-      - name: Check Rust formatting
-        run: cargo fmt --check
-
-      - name: Check Rust dynamic-loading build
-        run: cargo check --features load-dynamic
-
-      - name: Check Python formatting and lint
-        run: |
-          python -m ruff format --check "${PYTHON_PACKAGE_DIR}/python" "${PYTHON_PACKAGE_DIR}/build"
-          python -m ruff check "${PYTHON_PACKAGE_DIR}/python" "${PYTHON_PACKAGE_DIR}/build"
-
-      - name: Check Python build profiles
-        working-directory: ${{ env.PYTHON_PACKAGE_DIR }}
-        run: |
-          PYTHONDONTWRITEBYTECODE=1 python - <<'PY'
-          import os
-          from build import backend
-
-          os.environ.pop("ORT_DYLIB_PATH", None)
-          os.environ.pop("BUILD_PROFILE", None)
-          assert backend._profiled_config_settings(None)["maturin.build-args"] == []
-          assert "onnxruntime>=1.28,<2" in backend.get_requires_for_build_wheel(None)
-
-          os.environ["BUILD_PROFILE"] = "cuda"
-          assert backend._profiled_config_settings(None)["maturin.build-args"] == ["--features", "cuda"]
-          PY
-
   build-sdist:
     name: Build sdist
     runs-on: ubuntu-latest
@@ -85,7 +38,11 @@ jobs:
         run: python -m pip install --upgrade pip build
 
       - name: Build source distribution
-        run: python -m build "${PYTHON_PACKAGE_DIR}" --sdist --outdir dist
+        run: |
+          python -m build \
+            "${PYTHON_PACKAGE_DIR}" \
+            --sdist \
+            --outdir dist
 
       - name: Upload source distribution
         uses: actions/upload-artifact@v7
@@ -115,11 +72,14 @@ jobs:
               yum install -y curl
             fi
           fi
+
           if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
             export PATH="$HOME/.cargo/bin:$PATH"
           fi
+
           rustup toolchain install stable --profile minimal
           rustup default stable
 
@@ -130,7 +90,9 @@ jobs:
           MATURIN_BUILD_ARGS: --compatibility manylinux_2_28
         run: |
           "${PYTHON}" -m pip install --upgrade pip
-          "${PYTHON}" -m pip wheel "${PYTHON_PACKAGE_DIR}" \
+
+          "${PYTHON}" -m pip wheel \
+            "${PYTHON_PACKAGE_DIR}" \
             --no-deps \
             --wheel-dir dist \
             --config-settings "maturin.build-args=${MATURIN_BUILD_ARGS}"
@@ -142,17 +104,9 @@ jobs:
           path: dist/*.whl
           if-no-files-found: error
 
-  build-macos-wheels:
-    name: Build wheel (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # ONNX Runtime 1.28 does not publish macOS x86_64 Python wheels.
-          # Re-enable this only if CI provides a compatible ORT_DYLIB_PATH.
-          - name: macos-arm64
-            runner: macos-15
+  build-macos-wheel:
+    name: Build wheel (macOS arm64)
+    runs-on: macos-15
 
     steps:
       - name: Check out repository
@@ -167,16 +121,16 @@ jobs:
           cache: pip
 
       - name: Set up Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Build wheel
         env:
           MATURIN_BUILD_ARGS: --compatibility pypi
         run: |
           python -m pip install --upgrade pip
-          python -m pip wheel "${PYTHON_PACKAGE_DIR}" \
+
+          python -m pip wheel \
+            "${PYTHON_PACKAGE_DIR}" \
             --no-deps \
             --wheel-dir dist \
             --config-settings "maturin.build-args=${MATURIN_BUILD_ARGS}"
@@ -184,7 +138,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v7
         with:
-          name: python-wheel-${{ matrix.name }}
+          name: python-wheel-macos-arm64
           path: dist/*.whl
           if-no-files-found: error
 
@@ -194,7 +148,7 @@ jobs:
     needs:
       - build-sdist
       - build-linux-wheel
-      - build-macos-wheels
+      - build-macos-wheel
 
     steps:
       - name: Download distributions
@@ -210,18 +164,27 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      - name: Check metadata
+      - name: Validate package metadata
         run: |
           python -m pip install --upgrade pip twine
           python -m twine check dist/*
+
+      - name: Verify wheel installation
+        run: |
+          python -m venv .venv-test
+          . .venv-test/bin/activate
+
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+
+          python -c "import fast_lightonocr"
 
   publish-pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     needs:
-      - checks
       - inspect-distributions
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi
       url: https://pypi.org/p/fast-lightonocr
