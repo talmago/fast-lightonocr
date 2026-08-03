@@ -76,6 +76,15 @@ impl LightOnOCROptions {
             ..Self::default()
         }
     }
+
+    /// Returns a copy of these options with a custom generation limit.
+    #[must_use]
+    pub fn with_max_new_tokens(self, max_new_tokens: usize) -> Self {
+        Self {
+            max_new_tokens: Some(max_new_tokens),
+            ..self
+        }
+    }
 }
 
 /// OCR inference result.

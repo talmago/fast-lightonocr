@@ -168,6 +168,14 @@ To print decoded output as tokens are generated, run the streaming example:
 cargo run --features load-dynamic --example streaming
 ```
 
+The streaming example accepts the same first three optional arguments as the
+inference example, plus an optional generation limit:
+
+```bash
+cargo run --features load-dynamic --example streaming -- \
+  <model-dir> <image-path> <default|fp16|q4> <max-new-tokens>
+```
+
 ### Test
 
 ```bash
