@@ -36,6 +36,7 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: ${{ env.PYTHON_PACKAGE_DIR }}/pyproject.toml
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -106,12 +107,48 @@ jobs:
           ]
           PY
 
-      - name: Build Python wheel
+      # - name: Build Python wheel
+      #   run: |
+      #     python -m pip wheel \
+      #       "${PYTHON_PACKAGE_DIR}" \
+      #       --no-deps \
+      #       --wheel-dir dist
+
+      - name: Build Python wheel with maturin
+        working-directory: ${{ env.PYTHON_PACKAGE_DIR }}
         run: |
-          python -m pip wheel \
-            "${PYTHON_PACKAGE_DIR}" \
-            --no-deps \
-            --wheel-dir dist
+          maturin build \
+            --release \
+            --out ../../dist
+      
+      - name: Inspect wheel contents
+        run: |
+          WHEEL="$(find dist -name '*.whl' | head -n1)"
+
+          echo "Wheel:"
+          echo "  $WHEEL"
+
+          echo
+          echo "=== Wheel contents ==="
+          python -m zipfile -l "$WHEEL"
+
+          echo
+          echo "=== Native libraries ==="
+          python - <<'PY'
+          import pathlib
+          import tempfile
+          import zipfile
+
+          wheel = next(pathlib.Path("dist").glob("*.whl"))
+
+          with tempfile.TemporaryDirectory() as tmp:
+              with zipfile.ZipFile(wheel) as zf:
+                  zf.extractall(tmp)
+
+              for path in sorted(pathlib.Path(tmp).rglob("*")):
+                  if path.suffix in {".so", ".dylib", ".dll"}:
+                      print(path.relative_to(tmp))
+          PY
 
       # - name: Verify wheel installation
       #   run: |
