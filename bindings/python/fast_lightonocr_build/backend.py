@@ -14,8 +14,6 @@ import os
 import platform
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -59,25 +57,6 @@ class BuildProfile:
     build_requirements: tuple[str, ...]
 
 
-# def build_wheel(
-#     wheel_directory: str,
-#     config_settings: Mapping[str, Any] | None = None,
-#     metadata_directory: str | None = None,
-# ) -> str:
-#     """Build and repair a wheel using the selected runtime profile."""
-
-#     settings = _profiled_config_settings(
-#         config_settings,
-#         repair_wheel=True,
-#     )
-
-
-#     with _configured_build_environment(settings):
-#         return maturin.build_wheel(
-#             wheel_directory,
-#             settings,
-#             metadata_directory,
-#         )
 def build_wheel(
     wheel_directory: str,
     config_settings: Mapping[str, Any] | None = None,
@@ -90,32 +69,12 @@ def build_wheel(
         repair_wheel=True,
     )
 
-    args = maturin.get_maturin_pep517_args(settings)
-
-    command = [
-        "maturin",
-        "build",
-        "--interpreter",
-        sys.executable,
-        *args,
-    ]
-
     with _configured_build_environment(settings):
-        print("Running:", " ".join(command), flush=True)
-
-        subprocess.run(
-            command,
-            check=True,
-            env=os.environ.copy(),
+        return maturin.build_wheel(
+            wheel_directory,
+            settings,
+            metadata_directory,
         )
-
-        target = Path("target/wheels")
-        wheel = max(target.glob("*.whl"), key=lambda p: p.stat().st_mtime)
-
-        destination = Path(wheel_directory) / wheel.name
-        shutil.copy2(wheel, destination)
-
-        return wheel.name
 
 
 def build_editable(
@@ -252,12 +211,6 @@ def _profiled_config_settings(
             "--auditwheel",
             "repair",
         )
-
-        # args = _set_maturin_option(
-        #     args,
-        #     "--compatibility",
-        #     "manylinux_2_28",
-        # )
 
     settings["maturin.build-args"] = args
     return settings

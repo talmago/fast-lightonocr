@@ -120,14 +120,25 @@ jobs:
         run: |
           WHEEL="$(find dist -maxdepth 1 -name '*.whl' | head -n1)"
           test -n "$WHEEL"
-          
+
           python -m zipfile -l "$WHEEL"
+
           python -m venv .venv-test
           . .venv-test/bin/activate
 
-          # Development wheels built on ubuntu-latest rely on the Python
-          # onnxruntime package rather than a bundled runtime.
           python -m pip install --upgrade pip
           python -m pip install "onnxruntime>=1.28,<2"
           python -m pip install "$WHEEL"
+
+          ORT_LIB_PATH="$(python - <<'PY'
+          from pathlib import Path
+          import onnxruntime
+          print(Path(onnxruntime.__file__).parent / "capi")
+          PY
+          )"
+
+          export ORT_LIB_PATH
+          export ORT_PREFER_DYNAMIC_LINK=1
+          export LD_LIBRARY_PATH="$ORT_LIB_PATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
           python -c "import fast_lightonocr"

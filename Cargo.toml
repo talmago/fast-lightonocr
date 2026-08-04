@@ -34,8 +34,26 @@ serde_json = "1.0.151"
 thiserror = "2.0.19"
 tokenizers = "0.23.1"
 
+[[example]]
+name = "inference"
+required-features = ["load-dynamic"]
+
+[[example]]
+name = "streaming"
+required-features = ["load-dynamic"]
+
 [features]
 default = []
 
+# Download and link a matching ONNX Runtime automatically.
+download-binaries = [
+    "ort/download-binaries",
+    "ort/copy-dylibs",
+    "ort/tls-rustls",
+]
+
+# Load ONNX Runtime explicitly at runtime instead of linking.
 load-dynamic = ["ort/load-dynamic", "dep:libloading"]
+
+# Enable CUDA execution provider.
 cuda = ["ort/cuda"]

@@ -139,47 +139,39 @@ result = model.process(
 
 ### Build
 
+The recommended development workflow links against an existing ONNX Runtime installation.
+
+Configure the runtime location:
+
+```bash
+export ORT_LIB_PATH=/path/to/onnxruntime
+export ORT_PREFER_DYNAMIC_LINK=1
+
+# macOS only
+export DYLD_LIBRARY_PATH="$ORT_LIB_PATH"
+```
+
+Then build normally:
+
 ```bash
 cargo build
 ```
 
-### Run the example
+Alternatively:
 
-```bash
-cargo run --features load-dynamic --example inference
-```
-
-The example defaults to:
-
-- model directory: `models/lightonocr`
-- image: `examples/SROIE-receipt.jpeg`
-- model preset: `default`
-
-Optional arguments are accepted in this order:
-
-```bash
-cargo run --features load-dynamic --example inference -- \
-  <model-dir> <image-path> <default|fp16|q4>
-```
-
-To print decoded output as tokens are generated, run the streaming example:
-
-```bash
-cargo run --features load-dynamic --example streaming
-```
-
-The streaming example accepts the same first three optional arguments as the
-inference example, plus an optional generation limit:
-
-```bash
-cargo run --features load-dynamic --example streaming -- \
-  <model-dir> <image-path> <default|fp16|q4> <max-new-tokens>
-```
+- `--features download-binaries` downloads a compatible ONNX Runtime automatically.
+- `--features load-dynamic` loads ONNX Runtime explicitly at runtime.
 
 ### Test
 
 ```bash
 cargo test
+```
+
+To use explicit runtime loading:
+
+```bash
+cargo test --features load-dynamic
 ```
 
 ### Lint
@@ -194,29 +186,64 @@ cargo clippy --all-targets --all-features
 cargo fmt
 ```
 
+### Run the examples
+
+The inference example defaults to:
+
+- model directory: `models/lightonocr`
+- image: `examples/SROIE-receipt.jpeg`
+- model preset: `default`
+
+```bash
+cargo run --example inference
+```
+
+Optional arguments are accepted in this order:
+
+```bash
+cargo run --example inference -- \
+  <model-dir> <image-path> <default|fp16|q4>
+```
+
+To print decoded output as tokens are generated:
+
+```bash
+cargo run --example streaming
+```
+
+The streaming example accepts the same first three optional arguments, plus an optional generation limit:
+
+```bash
+cargo run --example streaming -- \
+  <model-dir> <image-path> <default|fp16|q4> <max-new-tokens>
+```
+
+If using the runtime-loading feature:
+
+```bash
+cargo run --features load-dynamic --example inference
+cargo run --features load-dynamic --example streaming
+```
+
 ### Python Bindings
 
-Python bindings built with PyO3 and maturin.
+Python bindings are implemented using PyO3 and maturin.
 
-For installation, development, packaging, build profiles, and ONNX Runtime configuration, see:
+For installation, packaging, development workflow, build profiles, and ONNX Runtime configuration, see:
 
 - **[bindings/python/README.md](bindings/python/README.md)**
 
-### ONNX Runtime Discovery
+### ONNX Runtime
 
-The project supports two approaches for locating ONNX Runtime:
+The project supports three runtime configurations:
 
-1. **Default builds** use the ONNX Runtime configured by the selected build profile.
-2. **Dynamic loading** (enabled with the Rust `load-dynamic` feature) loads the runtime specified by the `ORT_DYLIB_PATH` environment variable.
+| Mode | Description |
+|------|-------------|
+| **System runtime (recommended)** | Links against an existing ONNX Runtime installation using `ORT_LIB_PATH` and `ORT_PREFER_DYNAMIC_LINK`. |
+| **download-binaries** | Downloads a compatible ONNX Runtime automatically during the build. |
+| **load-dynamic** | Loads ONNX Runtime explicitly at runtime using `ORT_DYLIB_PATH`. |
 
-When using `load-dynamic`, configure the runtime library location before building or running the project:
-
-```bash
-export ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib
-```
-
-The build tooling validates that the discovered runtime is compatible with the
-version expected by the project (currently ONNX Runtime 1.28.x / C API level 27).
+The Python bindings use the same native library and build infrastructure.
 
 ---
 
