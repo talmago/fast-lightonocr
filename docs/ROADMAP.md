@@ -77,7 +77,7 @@ Optimize inference without changing model outputs.
 - Reduce allocations
 - Reuse ONNX tensors
 - ✅ Reuse KV-cache buffers across decode steps (in-place present-tensor copy)
-- Optimize default top-p sampling
+- ✅ Optimize top-k / top-p sampling (select_nth + heap nucleus; avoid full-vocab sort)
 - Benchmark inference
 - ORT / execution-provider tuning
 

@@ -5,6 +5,9 @@
 //! KV-cache, generation configuration) and delegates token-selection logic to
 //! these helpers.
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
 use crate::{Error, Result};
 
 use super::config::GenerationConfig;
@@ -98,16 +101,15 @@ fn sample_next_token(
         });
     }
 
-    let mut candidates = scores
-        .iter()
-        .enumerate()
-        .filter_map(|(token_id, &score)| {
-            score.is_finite().then_some(Candidate {
+    let mut candidates = Vec::with_capacity(scores.len());
+    for (token_id, &score) in scores.iter().enumerate() {
+        if score.is_finite() {
+            candidates.push(Candidate {
                 token_id,
                 score: score / config.temperature,
-            })
-        })
-        .collect::<Vec<_>>();
+            });
+        }
+    }
 
     if candidates.is_empty() {
         return Err(Error::Inference {
@@ -151,6 +153,10 @@ struct Candidate {
     score: f32,
 }
 
+/// Keeps the `top_k` highest-scoring candidates without sorting the full list.
+///
+/// Uses `select_nth_unstable_by` so cost is linearithmic in the worst case for
+/// selection, then truncates. The retained prefix is unsorted.
 fn apply_top_k(candidates: &mut Vec<Candidate>, top_k: u32) {
     let Ok(top_k) = usize::try_from(top_k) else {
         return;
@@ -159,10 +165,17 @@ fn apply_top_k(candidates: &mut Vec<Candidate>, top_k: u32) {
         return;
     }
 
-    sort_candidates(candidates);
+    candidates.select_nth_unstable_by(top_k - 1, compare_candidates_descending);
     candidates.truncate(top_k);
 }
 
+/// Truncates to the nucleus of candidates whose cumulative softmax mass reaches
+/// `top_p`, without sorting the full candidate list.
+///
+/// Builds an O(n) max-heap over scores and extracts highest-scoring tokens until
+/// the cumulative probability is at least `top_p`. For peaked distributions
+/// (typical with low temperature) the nucleus is much smaller than the vocab,
+/// so this is far cheaper than an O(n log n) full sort.
 fn apply_top_p(candidates: &mut Vec<Candidate>, top_p: f32) -> Result<()> {
     if !top_p.is_finite() {
         return Err(Error::Inference {
@@ -178,21 +191,88 @@ fn apply_top_p(candidates: &mut Vec<Candidate>, top_p: f32) -> Result<()> {
         });
     }
 
-    sort_candidates(candidates);
-
     let probabilities = softmax_probabilities(candidates)?;
+
+    // Small candidate sets (typical after top-k) are cheaper to sort directly.
+    // Large sets use a max-heap so we only extract the nucleus, not sort all.
+    if candidates.len() <= 64 {
+        let mut order = (0..candidates.len()).collect::<Vec<_>>();
+        order.sort_unstable_by(|&left, &right| {
+            compare_candidates_descending(&candidates[left], &candidates[right])
+        });
+
+        let mut selected = Vec::new();
+        let mut cumulative_probability = 0.0;
+        for index in order {
+            selected.push(candidates[index]);
+            cumulative_probability += probabilities[index];
+            if cumulative_probability >= top_p {
+                break;
+            }
+        }
+        *candidates = selected;
+        return Ok(());
+    }
+
+    let heap = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| NucleusItem {
+            score: candidate.score,
+            token_id: candidate.token_id,
+            index,
+        })
+        .collect::<BinaryHeap<_>>();
+
+    let mut selected = Vec::new();
     let mut cumulative_probability = 0.0;
-    let mut keep_count = 0;
-    for probability in probabilities {
-        cumulative_probability += probability;
-        keep_count += 1;
+    let mut heap = heap;
+    while let Some(item) = heap.pop() {
+        selected.push(candidates[item.index]);
+        cumulative_probability += probabilities[item.index];
         if cumulative_probability >= top_p {
             break;
         }
     }
 
-    candidates.truncate(keep_count.max(1));
+    if selected.is_empty() {
+        return Err(Error::Inference {
+            reason: "top-p filtering removed every candidate".to_owned(),
+        });
+    }
+
+    *candidates = selected;
     Ok(())
+}
+
+/// Max-heap item: higher score first; lower token id wins ties (matches prior sort).
+#[derive(Clone, Copy, Debug)]
+struct NucleusItem {
+    score: f32,
+    token_id: usize,
+    index: usize,
+}
+
+impl PartialEq for NucleusItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for NucleusItem {}
+
+impl PartialOrd for NucleusItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NucleusItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| other.token_id.cmp(&self.token_id))
+    }
 }
 
 fn sample_candidate(candidates: &[Candidate], rng: &mut fastrand::Rng) -> Result<i64> {
@@ -244,13 +324,11 @@ fn softmax_probabilities(candidates: &[Candidate]) -> Result<Vec<f32>> {
         .collect())
 }
 
-fn sort_candidates(candidates: &mut [Candidate]) {
-    candidates.sort_unstable_by(|left, right| {
-        right
-            .score
-            .total_cmp(&left.score)
-            .then_with(|| left.token_id.cmp(&right.token_id))
-    });
+fn compare_candidates_descending(left: &Candidate, right: &Candidate) -> Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| left.token_id.cmp(&right.token_id))
 }
 
 fn token_id_to_i64(token_id: usize) -> Result<i64> {
@@ -276,6 +354,21 @@ mod tests {
             transformers_version: None,
             trust_remote_code: false,
         }
+    }
+
+    fn sort_based_top_p(candidates: &mut Vec<Candidate>, top_p: f32) {
+        candidates.sort_unstable_by(compare_candidates_descending);
+        let probabilities = softmax_probabilities(candidates).unwrap();
+        let mut cumulative_probability = 0.0;
+        let mut keep_count = 0;
+        for probability in probabilities {
+            cumulative_probability += probability;
+            keep_count += 1;
+            if cumulative_probability >= top_p {
+                break;
+            }
+        }
+        candidates.truncate(keep_count.max(1));
     }
 
     #[test]
@@ -322,6 +415,86 @@ mod tests {
         let mut rng = fastrand::Rng::with_seed(42);
 
         assert_eq!(next_token(&config, &logits, &mut rng).unwrap(), 0);
+    }
+
+    #[test]
+    fn top_p_nucleus_matches_sort_based_selection() {
+        let scores = [
+            3.0, 2.5, 2.0, 1.5, 1.0, 0.5, 0.25, 0.1, -1.0, -2.0, 4.0, 0.0,
+        ];
+        assert_top_p_matches_sort(&scores, 0.9);
+    }
+
+    #[test]
+    fn top_p_nucleus_matches_sort_based_selection_large_vocab() {
+        // Exercises the heap path (candidate count > 64).
+        let mut scores = vec![0.0; 512];
+        for (index, score) in scores.iter_mut().enumerate() {
+            *score = (index as f32 * 0.037) % 5.0 - 1.0;
+        }
+        scores[17] = 8.0;
+        scores[99] = 7.5;
+        scores[250] = 7.0;
+        assert_top_p_matches_sort(&scores, 0.9);
+    }
+
+    fn assert_top_p_matches_sort(scores: &[f32], top_p: f32) {
+        let mut heap_based = scores
+            .iter()
+            .enumerate()
+            .map(|(token_id, &score)| Candidate { token_id, score })
+            .collect::<Vec<_>>();
+        let mut sort_based = heap_based.clone();
+
+        apply_top_p(&mut heap_based, top_p).unwrap();
+        sort_based_top_p(&mut sort_based, top_p);
+
+        let mut heap_ids = heap_based
+            .iter()
+            .map(|candidate| candidate.token_id)
+            .collect::<Vec<_>>();
+        let mut sort_ids = sort_based
+            .iter()
+            .map(|candidate| candidate.token_id)
+            .collect::<Vec<_>>();
+        heap_ids.sort_unstable();
+        sort_ids.sort_unstable();
+        assert_eq!(heap_ids, sort_ids);
+    }
+
+    #[test]
+    fn top_k_select_keeps_highest_scoring_tokens() {
+        let mut candidates = vec![
+            Candidate {
+                token_id: 0,
+                score: 1.0,
+            },
+            Candidate {
+                token_id: 1,
+                score: 5.0,
+            },
+            Candidate {
+                token_id: 2,
+                score: 3.0,
+            },
+            Candidate {
+                token_id: 3,
+                score: 4.0,
+            },
+            Candidate {
+                token_id: 4,
+                score: 2.0,
+            },
+        ];
+
+        apply_top_k(&mut candidates, 3);
+
+        let mut ids = candidates
+            .iter()
+            .map(|candidate| candidate.token_id)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2, 3]);
     }
 
     #[test]
