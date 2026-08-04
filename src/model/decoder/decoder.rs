@@ -12,7 +12,7 @@ use crate::{Error, Result};
 use super::attention::AttentionMask;
 use super::config::{DecoderConfig, GenerationConfig};
 use super::generation::{self, FinishReason, GenerationOutput};
-use super::kv_cache::{KvCache, LayerCache, values_per_tensor};
+use super::kv_cache::{KvCache, values_per_tensor};
 use super::logits::Logits;
 use super::output::DecoderOutput;
 
@@ -142,12 +142,10 @@ impl Decoder {
         let mut finish_reason = FinishReason::Length;
 
         for step in 0..self.generation_config.max_new_tokens {
-            let output = self.decode(&decoder_input, &attention_mask, &kv_cache)?;
-
-            kv_cache = output.kv_cache;
+            let logits = self.decode_step(&decoder_input, &attention_mask, &mut kv_cache)?;
 
             let next_token =
-                generation::next_token(&self.generation_config, &output.logits, &mut self.rng)?;
+                generation::next_token(&self.generation_config, &logits, &mut self.rng)?;
 
             generated.push(next_token);
             on_token(next_token);
@@ -184,56 +182,73 @@ impl Decoder {
         attention_mask: &AttentionMask,
         kv_cache: &KvCache,
     ) -> Result<DecoderOutput> {
+        let mut cache = kv_cache.clone();
+        let logits = self.decode_step(input_embeddings, attention_mask, &mut cache)?;
+        Ok(DecoderOutput::new(logits, cache))
+    }
+
+    /// Executes one decoder pass, writing the updated KV cache in place.
+    ///
+    /// Present tensors are copied into the existing per-layer buffers so
+    /// allocation capacity is reused across autoregressive steps.
+    fn decode_step(
+        &mut self,
+        input_embeddings: &InputEmbeddings,
+        attention_mask: &AttentionMask,
+        kv_cache: &mut KvCache,
+    ) -> Result<Logits> {
         let total_sequence_length =
             validate_decoder_inputs(input_embeddings, attention_mask, kv_cache, &self.config)?;
 
         let (batch_size, sequence_length, hidden_size) = input_embeddings.shape();
-        let input_embeddings_shape = [
-            batch_size as i64,
-            sequence_length as i64,
-            hidden_size as i64,
-        ];
-        let input_embeddings_tensor =
-            TensorRef::from_array_view((input_embeddings_shape, input_embeddings.as_slice()))
-                .map_err(|source| Error::DecoderTensorCreation { source })?;
-        let attention_mask_shape = [batch_size as i64, total_sequence_length as i64];
-        let attention_mask_tensor =
-            TensorRef::from_array_view((attention_mask_shape, attention_mask.as_slice()))
-                .map_err(|source| Error::DecoderTensorCreation { source })?;
         let use_cache_branch_value = [!kv_cache.is_empty()];
 
-        let mut inputs =
-            Vec::with_capacity(decoder_input_count(&self.config, self.has_cache_branch));
-        inputs.push(SessionInputValue::from(input_embeddings_tensor));
-        inputs.push(SessionInputValue::from(attention_mask_tensor));
-
-        if self.has_cache_branch {
-            let use_cache_branch_tensor =
-                TensorRef::from_array_view(((), use_cache_branch_value.as_slice()))
+        let mut outputs = {
+            let input_embeddings_shape = [
+                batch_size as i64,
+                sequence_length as i64,
+                hidden_size as i64,
+            ];
+            let input_embeddings_tensor =
+                TensorRef::from_array_view((input_embeddings_shape, input_embeddings.as_slice()))
                     .map_err(|source| Error::DecoderTensorCreation { source })?;
-            inputs.push(SessionInputValue::from(use_cache_branch_tensor));
-        }
+            let attention_mask_shape = [batch_size as i64, total_sequence_length as i64];
+            let attention_mask_tensor =
+                TensorRef::from_array_view((attention_mask_shape, attention_mask.as_slice()))
+                    .map_err(|source| Error::DecoderTensorCreation { source })?;
 
-        let cache_shape = [
-            kv_cache.batch_size() as i64,
-            kv_cache.num_key_value_heads() as i64,
-            kv_cache.past_sequence_length() as i64,
-            kv_cache.head_dim() as i64,
-        ];
-        for layer in kv_cache.layers() {
-            let key_tensor = TensorRef::from_array_view((cache_shape, layer.key()))
-                .map_err(|source| Error::DecoderTensorCreation { source })?;
-            inputs.push(SessionInputValue::from(key_tensor));
+            let mut inputs =
+                Vec::with_capacity(decoder_input_count(&self.config, self.has_cache_branch));
+            inputs.push(SessionInputValue::from(input_embeddings_tensor));
+            inputs.push(SessionInputValue::from(attention_mask_tensor));
 
-            let value_tensor = TensorRef::from_array_view((cache_shape, layer.value()))
-                .map_err(|source| Error::DecoderTensorCreation { source })?;
-            inputs.push(SessionInputValue::from(value_tensor));
-        }
+            if self.has_cache_branch {
+                let use_cache_branch_tensor =
+                    TensorRef::from_array_view(((), use_cache_branch_value.as_slice()))
+                        .map_err(|source| Error::DecoderTensorCreation { source })?;
+                inputs.push(SessionInputValue::from(use_cache_branch_tensor));
+            }
 
-        let mut outputs = self
-            .session
-            .run(inputs.as_slice())
-            .map_err(|source| Error::DecoderInference { source })?;
+            let cache_shape = [
+                kv_cache.batch_size() as i64,
+                kv_cache.num_key_value_heads() as i64,
+                kv_cache.past_sequence_length() as i64,
+                kv_cache.head_dim() as i64,
+            ];
+            for layer in kv_cache.layers() {
+                let key_tensor = TensorRef::from_array_view((cache_shape, layer.key()))
+                    .map_err(|source| Error::DecoderTensorCreation { source })?;
+                inputs.push(SessionInputValue::from(key_tensor));
+
+                let value_tensor = TensorRef::from_array_view((cache_shape, layer.value()))
+                    .map_err(|source| Error::DecoderTensorCreation { source })?;
+                inputs.push(SessionInputValue::from(value_tensor));
+            }
+
+            self.session
+                .run(inputs.as_slice())
+                .map_err(|source| Error::DecoderInference { source })?
+        };
 
         let logits_output =
             outputs
@@ -263,14 +278,15 @@ impl Decoder {
             usize::try_from(logits_shape[2]).expect("validated non-negative vocabulary size"),
         )?;
 
-        let updated_cache = extract_updated_cache(
+        update_cache_from_outputs(
             &mut outputs,
+            kv_cache,
             batch_size,
             total_sequence_length,
             &self.config,
         )?;
 
-        Ok(DecoderOutput::new(logits, updated_cache))
+        Ok(logits)
     }
 }
 
@@ -616,16 +632,27 @@ fn validate_decoder_inputs(
     Ok(total_sequence_length)
 }
 
-fn extract_updated_cache(
+fn update_cache_from_outputs(
     outputs: &mut ort::session::SessionOutputs<'_>,
+    kv_cache: &mut KvCache,
     batch_size: usize,
     total_sequence_length: usize,
     config: &DecoderConfig,
-) -> Result<KvCache> {
-    let mut layers = Vec::with_capacity(config.num_hidden_layers);
+) -> Result<()> {
     for layer_index in 0..config.num_hidden_layers {
         let key_name = present_key_name(layer_index);
-        let (key_shape, key_data) = extract_f32_output(outputs, &key_name)?;
+        let key_output = outputs
+            .remove(&key_name)
+            .ok_or_else(|| Error::InvalidDecoderOutput {
+                reason: format!("missing `{key_name}` output"),
+            })?;
+        let (key_shape, key_present) =
+            key_output.try_extract_tensor::<f32>().map_err(|source| {
+                Error::InvalidDecoderOutput {
+                    reason: format!("failed to extract `{key_name}` as float32: {source}"),
+                }
+            })?;
+        let key_shape = key_shape.as_ref().to_vec();
         validate_cache_output_shape(
             &key_shape,
             &key_name,
@@ -635,7 +662,19 @@ fn extract_updated_cache(
         )?;
 
         let value_name = present_value_name(layer_index);
-        let (value_shape, value_data) = extract_f32_output(outputs, &value_name)?;
+        let value_output =
+            outputs
+                .remove(&value_name)
+                .ok_or_else(|| Error::InvalidDecoderOutput {
+                    reason: format!("missing `{value_name}` output"),
+                })?;
+        let (value_shape, value_present) =
+            value_output.try_extract_tensor::<f32>().map_err(|source| {
+                Error::InvalidDecoderOutput {
+                    reason: format!("failed to extract `{value_name}` as float32: {source}"),
+                }
+            })?;
+        let value_shape = value_shape.as_ref().to_vec();
         validate_cache_output_shape(
             &value_shape,
             &value_name,
@@ -644,35 +683,19 @@ fn extract_updated_cache(
             config,
         )?;
 
-        layers.push(LayerCache::new(key_data, value_data));
+        let layer = &mut kv_cache.layers_mut()[layer_index];
+        copy_into_reused_buffer(layer.key_mut(), key_present);
+        copy_into_reused_buffer(layer.value_mut(), value_present);
     }
 
-    KvCache::new(
-        layers,
-        batch_size,
-        total_sequence_length,
-        config.num_key_value_heads,
-        config.head_dim,
-    )
+    kv_cache.set_past_sequence_length(total_sequence_length);
+    Ok(())
 }
 
-fn extract_f32_output(
-    outputs: &mut ort::session::SessionOutputs<'_>,
-    name: &str,
-) -> Result<(Vec<i64>, Vec<f32>)> {
-    let output = outputs
-        .remove(name)
-        .ok_or_else(|| Error::InvalidDecoderOutput {
-            reason: format!("missing `{name}` output"),
-        })?;
-    let (shape, data) =
-        output
-            .try_extract_tensor::<f32>()
-            .map_err(|source| Error::InvalidDecoderOutput {
-                reason: format!("failed to extract `{name}` as float32: {source}"),
-            })?;
-
-    Ok((shape.as_ref().to_vec(), data.to_vec()))
+/// Copies `src` into `dst`, reusing `dst`'s existing allocation capacity.
+fn copy_into_reused_buffer(dst: &mut Vec<f32>, src: &[f32]) {
+    dst.clear();
+    dst.extend_from_slice(src);
 }
 
 fn validate_logits_shape(

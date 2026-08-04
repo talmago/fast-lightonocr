@@ -27,13 +27,22 @@ impl LayerCache {
     pub fn value(&self) -> &[f32] {
         &self.value
     }
+
+    pub(crate) fn key_mut(&mut self) -> &mut Vec<f32> {
+        &mut self.key
+    }
+
+    pub(crate) fn value_mut(&mut self) -> &mut Vec<f32> {
+        &mut self.value
+    }
 }
 
 /// Opaque decoder key/value cache passed between decoder invocations.
 ///
 /// `KvCache` contains one [`LayerCache`] for each decoder layer. The cache is
-/// initialized empty for the first decoder pass and replaced with the updated
-/// cache returned by the ONNX decoder after every pass.
+/// initialized empty for the first decoder pass. During autoregressive
+/// generation the decoder overwrites each layer's buffers in place, reusing
+/// allocation capacity across steps.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct KvCache {
     layers: Vec<LayerCache>,
@@ -178,6 +187,14 @@ impl KvCache {
     /// Returns whether the cache contains no past sequence positions.
     pub fn is_empty(&self) -> bool {
         self.past_sequence_length == 0
+    }
+
+    pub(crate) fn layers_mut(&mut self) -> &mut [LayerCache] {
+        &mut self.layers
+    }
+
+    pub(crate) fn set_past_sequence_length(&mut self, past_sequence_length: usize) {
+        self.past_sequence_length = past_sequence_length;
     }
 }
 

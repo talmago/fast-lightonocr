@@ -259,6 +259,10 @@ Responsibilities include:
 - token selection
 - stopping criteria
 
+During autoregressive generation the decoder keeps one `KvCache` and overwrites
+each layer's key/value buffers in place after every step, reusing allocation
+capacity instead of allocating a fresh cache from the full `present.*` outputs.
+
 `Decoder::generate()` receives the merged initial `InputEmbeddings`, the
 initial `AttentionMask`, and the embedding model used to embed each generated
 next token. It returns generated token IDs and a finish reason indicating
