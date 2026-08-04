@@ -13,6 +13,7 @@ use ::image::DynamicImage;
 use std::path::Path;
 
 use crate::model::AttentionMask;
+use crate::profiling::{self, Stage};
 use crate::tokenizer::Tokenizer;
 use crate::{Error, Result};
 
@@ -102,11 +103,15 @@ impl Processor {
         messages: &[Message],
         images: &[DynamicImage],
     ) -> Result<ProcessorOutput> {
+        let _processor_timer = profiling::start(Stage::ProcessorTotal);
         let image = images.first().ok_or_else(|| Error::ImageProcessing {
             reason: "at least one image is required".to_owned(),
         })?;
 
-        let pixel_values = self.image_processor.process_image(image)?;
+        let pixel_values = {
+            let _timer = profiling::start(Stage::ImagePreprocessing);
+            self.image_processor.process_image(image)?
+        };
 
         let vision_grid = VisionGrid::from_image_size(
             pixel_values.width(),
@@ -115,12 +120,20 @@ impl Processor {
             self.config.spatial_merge_size(),
         )?;
 
-        let input_ids = self.text_processor.process(messages)?;
-        let input_ids = self
-            .text_processor
-            .expand_image_placeholders(&input_ids, vision_grid)?;
+        let input_ids = {
+            let _timer = profiling::start(Stage::TextProcessing);
+            self.text_processor.process(messages)?
+        };
+        let input_ids = {
+            let _timer = profiling::start(Stage::PlaceholderExpansion);
+            self.text_processor
+                .expand_image_placeholders(&input_ids, vision_grid)?
+        };
 
-        let attention_mask = AttentionMask::ones(input_ids.len());
+        let attention_mask = {
+            let _timer = profiling::start(Stage::AttentionMask);
+            AttentionMask::ones(input_ids.len())
+        };
 
         Ok(ProcessorOutput {
             input_ids,

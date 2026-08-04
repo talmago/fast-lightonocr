@@ -11,6 +11,8 @@ pub mod processor;
 pub mod tokenizer;
 pub mod util;
 
+mod profiling;
+
 pub use model::{
     Decoder, EmbeddingModel, ExecutionProvider, FinishReason, GenerationConfig, ImageTensor,
     LightOnOCR, LightOnOCROptions, OCRResult, RuntimeOptions, VisionEncoder,

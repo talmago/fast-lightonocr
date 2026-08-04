@@ -6,6 +6,7 @@ use ort::session::Session;
 use ort::value::{TensorElementType, TensorRef, ValueType};
 
 use crate::model::InputEmbeddings;
+use crate::profiling::{self, Stage};
 use crate::{Error, Result};
 
 use super::EmbeddingConfig;
@@ -75,10 +76,12 @@ impl EmbeddingModel {
         let input = TensorRef::from_array_view((input_shape, token_ids))
             .map_err(|source| Error::EmbeddingTensorCreation { source })?;
 
-        let mut outputs = self
-            .session
-            .run(ort::inputs! { EMBEDDING_INPUT_NAME => input })
-            .map_err(|source| Error::EmbeddingInference { source })?;
+        let mut outputs = {
+            let _timer = profiling::start(Stage::EmbeddingOnnx);
+            self.session
+                .run(ort::inputs! { EMBEDDING_INPUT_NAME => input })
+                .map_err(|source| Error::EmbeddingInference { source })?
+        };
 
         let output =
             outputs

@@ -76,8 +76,11 @@ Optimize inference without changing model outputs.
 
 - Reduce allocations
 - Reuse ONNX tensors
-- Optimize KV-cache updates
+- ✅ Investigate KV-cache updates (see [`KV_CACHE_PERF.md`](KV_CACHE_PERF.md)); adopt `ReusableBuffers` as production default in a follow-up
+- ✅ Profile decoder loop attribution (see [`DECODER_LOOP_PERF.md`](DECODER_LOOP_PERF.md))
+- Optimize default top-p sampling (full-vocab sort; ~14% of generation)
 - Benchmark inference
+- ORT / execution-provider tuning once host hotspots are cleared
 
 ---
 

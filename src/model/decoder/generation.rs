@@ -5,6 +5,7 @@
 //! KV-cache, generation configuration) and delegates token-selection logic to
 //! these helpers.
 
+use crate::profiling::{self, Stage};
 use crate::{Error, Result};
 
 use super::config::GenerationConfig;
@@ -71,6 +72,7 @@ pub(super) fn is_eos(config: &GenerationConfig, token_id: i64) -> bool {
 
 /// Greedily selects the highest-scoring token from the final decoder position.
 fn greedy_next_token(logits: &Logits) -> Result<i64> {
+    let _timer = profiling::start(Stage::GreedyArgmax);
     let scores = final_position_scores(logits)?;
 
     let (token_id, _) = scores
@@ -98,16 +100,19 @@ fn sample_next_token(
         });
     }
 
-    let mut candidates = scores
-        .iter()
-        .enumerate()
-        .filter_map(|(token_id, &score)| {
-            score.is_finite().then_some(Candidate {
-                token_id,
-                score: score / config.temperature,
+    let mut candidates = {
+        let _timer = profiling::start(Stage::SampleCandidateBuild);
+        scores
+            .iter()
+            .enumerate()
+            .filter_map(|(token_id, &score)| {
+                score.is_finite().then_some(Candidate {
+                    token_id,
+                    score: score / config.temperature,
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    };
 
     if candidates.is_empty() {
         return Err(Error::Inference {
@@ -115,9 +120,18 @@ fn sample_next_token(
         });
     }
 
-    apply_top_k(&mut candidates, config.top_k);
-    apply_top_p(&mut candidates, config.top_p)?;
-    sample_candidate(&candidates, rng)
+    {
+        let _timer = profiling::start(Stage::SampleTopK);
+        apply_top_k(&mut candidates, config.top_k);
+    }
+    {
+        let _timer = profiling::start(Stage::SampleTopP);
+        apply_top_p(&mut candidates, config.top_p)?;
+    }
+    {
+        let _timer = profiling::start(Stage::SampleDraw);
+        sample_candidate(&candidates, rng)
+    }
 }
 
 fn final_position_scores(logits: &Logits) -> Result<&[f32]> {

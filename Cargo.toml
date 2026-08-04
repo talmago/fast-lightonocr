@@ -42,6 +42,17 @@ required-features = ["load-dynamic"]
 name = "streaming"
 required-features = ["load-dynamic"]
 
+[[example]]
+name = "kv_cache_bench"
+
+[[example]]
+name = "kv_cache_e2e"
+required-features = ["load-dynamic"]
+
+[[example]]
+name = "profile_decoder_loop"
+required-features = ["load-dynamic", "profiling"]
+
 [features]
 default = []
 
@@ -57,3 +68,7 @@ load-dynamic = ["ort/load-dynamic", "dep:libloading"]
 
 # Enable CUDA execution provider.
 cuda = ["ort/cuda"]
+
+# Compile in inference stage timers and KV-cache counters.
+# Runtime output still requires LIGHTONOCR_PROFILE=1.
+profiling = []

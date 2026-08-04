@@ -11,6 +11,7 @@ use super::{
 
 use crate::model::{AttentionMask, ImageFeatures, InputEmbeddings};
 use crate::processor::{Message, MessageContent, MessageRole};
+use crate::profiling::{self, Stage};
 use crate::util::ExecutionProvider;
 use crate::{Error, Processor, Result};
 
@@ -217,13 +218,17 @@ impl LightOnOCR {
         image: &DynamicImage,
         system_prompt: Option<&str>,
     ) -> Result<OCRResult> {
-        let (input_embeddings, attention_mask) = self.prepare_inputs(image, system_prompt)?;
+        profiling::run(|| {
+            let (input_embeddings, attention_mask) = self.prepare_inputs(image, system_prompt)?;
 
-        let generated =
-            self.decoder
-                .generate(input_embeddings, attention_mask, &mut self.embedding_model)?;
+            let generated = self.decoder.generate(
+                input_embeddings,
+                attention_mask,
+                &mut self.embedding_model,
+            )?;
 
-        self.decode_result(generated)
+            self.decode_result(generated)
+        })
     }
 
     /// Processes an in-memory image while streaming decoded text chunks.
@@ -240,46 +245,52 @@ impl LightOnOCR {
         system_prompt: Option<&str>,
         mut on_text: impl FnMut(&str),
     ) -> Result<OCRResult> {
-        let (input_embeddings, attention_mask) = self.prepare_inputs(image, system_prompt)?;
+        profiling::run(|| {
+            let (input_embeddings, attention_mask) = self.prepare_inputs(image, system_prompt)?;
 
-        let tokenizer = self.processor.tokenizer();
-        let mut stream_token_ids = Vec::new();
-        let mut streamed_text = String::new();
-        let mut streaming_error = None;
+            let tokenizer = self.processor.tokenizer();
+            let mut stream_token_ids = Vec::new();
+            let mut streamed_text = String::new();
+            let mut streaming_error = None;
 
-        let generated = self.decoder.generate_streaming(
-            input_embeddings,
-            attention_mask,
-            &mut self.embedding_model,
-            |token_id| {
-                if streaming_error.is_some() {
-                    return;
-                }
-
-                stream_token_ids.push(token_id);
-
-                let decoded = match tokenizer.decode_skip_special_tokens(&stream_token_ids) {
-                    Ok(decoded) => decoded,
-                    Err(error) => {
-                        streaming_error = Some(error);
+            let generated = self.decoder.generate_streaming(
+                input_embeddings,
+                attention_mask,
+                &mut self.embedding_model,
+                |token_id| {
+                    if streaming_error.is_some() {
                         return;
                     }
-                };
 
-                let chunk = decoded_delta(&streamed_text, &decoded);
-                if !chunk.is_empty() {
-                    on_text(chunk);
-                }
+                    stream_token_ids.push(token_id);
 
-                streamed_text = decoded;
-            },
-        )?;
+                    let decoded = {
+                        let _timer = profiling::start(Stage::StreamDecode);
+                        match tokenizer.decode_skip_special_tokens(&stream_token_ids) {
+                            Ok(decoded) => decoded,
+                            Err(error) => {
+                                streaming_error = Some(error);
+                                return;
+                            }
+                        }
+                    };
 
-        if let Some(error) = streaming_error {
-            return Err(error);
-        }
+                    let chunk = decoded_delta(&streamed_text, &decoded);
+                    if !chunk.is_empty() {
+                        let _timer = profiling::start(Stage::StreamCallback);
+                        on_text(chunk);
+                    }
 
-        self.decode_result(generated)
+                    streamed_text = decoded;
+                },
+            )?;
+
+            if let Some(error) = streaming_error {
+                return Err(error);
+            }
+
+            self.decode_result(generated)
+        })
     }
 
     /// Loads and processes an image from disk.
@@ -328,6 +339,7 @@ impl LightOnOCR {
         image: &DynamicImage,
         system_prompt: Option<&str>,
     ) -> Result<(InputEmbeddings, AttentionMask)> {
+        let _prepare_timer = profiling::start(Stage::PrepareInputs);
         let mut content = Vec::new();
 
         if let Some(prompt) = system_prompt {
@@ -347,24 +359,32 @@ impl LightOnOCR {
 
         let image_features = self.vision_encoder.encode(&processed.pixel_values)?;
 
-        let text_embeddings = self.embedding_model.embed(&processed.input_ids)?;
+        let text_embeddings = {
+            let _timer = profiling::start(Stage::PromptEmbedding);
+            self.embedding_model.embed(&processed.input_ids)?
+        };
 
-        let input_embeddings = merge_image_features(
-            &processed.input_ids,
-            &text_embeddings,
-            &image_features,
-            self.decoder.image_token_id(),
-        )?;
+        let input_embeddings = {
+            let _timer = profiling::start(Stage::MergeImageFeatures);
+            merge_image_features(
+                &processed.input_ids,
+                &text_embeddings,
+                &image_features,
+                self.decoder.image_token_id(),
+            )?
+        };
 
         Ok((input_embeddings, processed.attention_mask))
     }
 
     /// Decodes generated token IDs into the final OCR result.
     fn decode_result(&self, generated: GenerationOutput) -> Result<OCRResult> {
-        let text = self
-            .processor
-            .tokenizer()
-            .decode_skip_special_tokens(generated.token_ids())?;
+        let text = {
+            let _timer = profiling::start(Stage::FinalTextDecode);
+            self.processor
+                .tokenizer()
+                .decode_skip_special_tokens(generated.token_ids())?
+        };
 
         Ok(OCRResult::new(text, generated))
     }

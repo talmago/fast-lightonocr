@@ -7,12 +7,13 @@ use ort::value::{Outlet, TensorElementType, TensorRef, ValueType};
 
 use crate::model::InputEmbeddings;
 use crate::model::embedding_model::EmbeddingModel;
+use crate::profiling::{self, Stage};
 use crate::{Error, Result};
 
 use super::attention::AttentionMask;
 use super::config::{DecoderConfig, GenerationConfig};
 use super::generation::{self, FinishReason, GenerationOutput};
-use super::kv_cache::{KvCache, LayerCache, values_per_tensor};
+use super::kv_cache::{KvCache, KvUpdateStrategy, values_per_tensor};
 use super::logits::Logits;
 use super::output::DecoderOutput;
 
@@ -130,6 +131,7 @@ impl Decoder {
         embedding_model: &mut EmbeddingModel,
         mut on_token: impl FnMut(i64),
     ) -> Result<GenerationOutput> {
+        let _generation_timer = profiling::start(Stage::GenerationTotal);
         if self.generation_config.max_new_tokens == 0 {
             return Ok(GenerationOutput::new(Vec::new(), FinishReason::Length));
         }
@@ -137,17 +139,32 @@ impl Decoder {
         let mut generated = Vec::with_capacity(self.generation_config.max_new_tokens);
 
         let mut kv_cache = self.empty_kv_cache(decoder_input.batch_size())?;
+        let kv_strategy = KvUpdateStrategy::from_env();
         attention_mask.reserve(self.generation_config.max_new_tokens);
 
         let mut finish_reason = FinishReason::Length;
 
         for step in 0..self.generation_config.max_new_tokens {
-            let output = self.decode(&decoder_input, &attention_mask, &kv_cache)?;
+            let logits = {
+                let stage = if step == 0 {
+                    Stage::PrefillDecoder
+                } else {
+                    Stage::AutoregressiveDecoder
+                };
+                let _timer = profiling::start(stage);
+                self.decode_with_strategy(
+                    &decoder_input,
+                    &attention_mask,
+                    &mut kv_cache,
+                    kv_strategy,
+                )?
+            };
 
-            kv_cache = output.kv_cache;
-
-            let next_token =
-                generation::next_token(&self.generation_config, &output.logits, &mut self.rng)?;
+            let next_token = {
+                let _timer = profiling::start(Stage::Sampling);
+                generation::next_token(&self.generation_config, &logits, &mut self.rng)?
+            };
+            profiling::record_generated_token();
 
             generated.push(next_token);
             on_token(next_token);
@@ -161,11 +178,17 @@ impl Decoder {
                 break;
             }
 
-            decoder_input = embedding_model.embed(&[next_token])?;
-            if step == 0 {
-                attention_mask.fill_visible();
+            decoder_input = {
+                let _timer = profiling::start(Stage::TokenEmbedding);
+                embedding_model.embed(&[next_token])?
+            };
+            {
+                let _timer = profiling::start(Stage::AttentionMaskUpdate);
+                if step == 0 {
+                    attention_mask.fill_visible();
+                }
+                attention_mask.push_visible();
             }
-            attention_mask.push_visible();
         }
 
         Ok(GenerationOutput::new(generated, finish_reason))
@@ -184,93 +207,123 @@ impl Decoder {
         attention_mask: &AttentionMask,
         kv_cache: &KvCache,
     ) -> Result<DecoderOutput> {
+        let mut cache = kv_cache.clone();
+        let logits = self.decode_with_strategy(
+            input_embeddings,
+            attention_mask,
+            &mut cache,
+            KvUpdateStrategy::FullCopyReplace,
+        )?;
+        Ok(DecoderOutput::new(logits, cache))
+    }
+
+    fn decode_with_strategy(
+        &mut self,
+        input_embeddings: &InputEmbeddings,
+        attention_mask: &AttentionMask,
+        kv_cache: &mut KvCache,
+        strategy: KvUpdateStrategy,
+    ) -> Result<Logits> {
         let total_sequence_length =
             validate_decoder_inputs(input_embeddings, attention_mask, kv_cache, &self.config)?;
 
         let (batch_size, sequence_length, hidden_size) = input_embeddings.shape();
-        let input_embeddings_shape = [
-            batch_size as i64,
-            sequence_length as i64,
-            hidden_size as i64,
-        ];
-        let input_embeddings_tensor =
-            TensorRef::from_array_view((input_embeddings_shape, input_embeddings.as_slice()))
-                .map_err(|source| Error::DecoderTensorCreation { source })?;
-        let attention_mask_shape = [batch_size as i64, total_sequence_length as i64];
-        let attention_mask_tensor =
-            TensorRef::from_array_view((attention_mask_shape, attention_mask.as_slice()))
-                .map_err(|source| Error::DecoderTensorCreation { source })?;
         let use_cache_branch_value = [!kv_cache.is_empty()];
-
-        let mut inputs =
-            Vec::with_capacity(decoder_input_count(&self.config, self.has_cache_branch));
-        inputs.push(SessionInputValue::from(input_embeddings_tensor));
-        inputs.push(SessionInputValue::from(attention_mask_tensor));
-
-        if self.has_cache_branch {
-            let use_cache_branch_tensor =
-                TensorRef::from_array_view(((), use_cache_branch_value.as_slice()))
+        let mut outputs = {
+            let tensor_preparation_timer = profiling::start(Stage::DecoderTensorPreparation);
+            let input_embeddings_shape = [
+                batch_size as i64,
+                sequence_length as i64,
+                hidden_size as i64,
+            ];
+            let input_embeddings_tensor =
+                TensorRef::from_array_view((input_embeddings_shape, input_embeddings.as_slice()))
                     .map_err(|source| Error::DecoderTensorCreation { source })?;
-            inputs.push(SessionInputValue::from(use_cache_branch_tensor));
+            let attention_mask_shape = [batch_size as i64, total_sequence_length as i64];
+            let attention_mask_tensor =
+                TensorRef::from_array_view((attention_mask_shape, attention_mask.as_slice()))
+                    .map_err(|source| Error::DecoderTensorCreation { source })?;
+
+            let mut inputs =
+                Vec::with_capacity(decoder_input_count(&self.config, self.has_cache_branch));
+            inputs.push(SessionInputValue::from(input_embeddings_tensor));
+            inputs.push(SessionInputValue::from(attention_mask_tensor));
+
+            if self.has_cache_branch {
+                let use_cache_branch_tensor =
+                    TensorRef::from_array_view(((), use_cache_branch_value.as_slice()))
+                        .map_err(|source| Error::DecoderTensorCreation { source })?;
+                inputs.push(SessionInputValue::from(use_cache_branch_tensor));
+            }
+
+            let cache_shape = [
+                kv_cache.batch_size() as i64,
+                kv_cache.num_key_value_heads() as i64,
+                kv_cache.past_sequence_length() as i64,
+                kv_cache.head_dim() as i64,
+            ];
+            for layer in kv_cache.layers() {
+                let key_tensor = TensorRef::from_array_view((cache_shape, layer.key()))
+                    .map_err(|source| Error::DecoderTensorCreation { source })?;
+                inputs.push(SessionInputValue::from(key_tensor));
+
+                let value_tensor = TensorRef::from_array_view((cache_shape, layer.value()))
+                    .map_err(|source| Error::DecoderTensorCreation { source })?;
+                inputs.push(SessionInputValue::from(value_tensor));
+            }
+            drop(tensor_preparation_timer);
+
+            let _timer = profiling::start(Stage::DecoderOnnx);
+            self.session
+                .run(inputs.as_slice())
+                .map_err(|source| Error::DecoderInference { source })?
+        };
+
+        let logits = {
+            let _timer = profiling::start(Stage::LogitsExtraction);
+            let logits_output =
+                outputs
+                    .remove(DECODER_LOGITS_NAME)
+                    .ok_or_else(|| Error::InvalidDecoderOutput {
+                        reason: format!("missing `{DECODER_LOGITS_NAME}` output"),
+                    })?;
+            let (logits_shape, logits_data) =
+                logits_output
+                    .try_extract_tensor::<f32>()
+                    .map_err(|source| Error::InvalidDecoderOutput {
+                        reason: format!(
+                            "failed to extract `{DECODER_LOGITS_NAME}` as float32: {source}"
+                        ),
+                    })?;
+            let logits_shape = logits_shape.as_ref();
+            validate_logits_shape(
+                logits_shape,
+                batch_size,
+                sequence_length,
+                self.config.vocab_size,
+            )?;
+            profiling::record_logits_extract_bytes(std::mem::size_of_val(logits_data));
+            Logits::new(
+                logits_data.to_vec(),
+                usize::try_from(logits_shape[0]).expect("validated non-negative batch size"),
+                usize::try_from(logits_shape[1]).expect("validated non-negative sequence length"),
+                usize::try_from(logits_shape[2]).expect("validated non-negative vocabulary size"),
+            )?
+        };
+
+        {
+            let _timer = profiling::start(Stage::KvCacheUpdate);
+            update_cache_from_outputs(
+                &mut outputs,
+                kv_cache,
+                batch_size,
+                total_sequence_length,
+                &self.config,
+                strategy,
+            )?;
         }
 
-        let cache_shape = [
-            kv_cache.batch_size() as i64,
-            kv_cache.num_key_value_heads() as i64,
-            kv_cache.past_sequence_length() as i64,
-            kv_cache.head_dim() as i64,
-        ];
-        for layer in kv_cache.layers() {
-            let key_tensor = TensorRef::from_array_view((cache_shape, layer.key()))
-                .map_err(|source| Error::DecoderTensorCreation { source })?;
-            inputs.push(SessionInputValue::from(key_tensor));
-
-            let value_tensor = TensorRef::from_array_view((cache_shape, layer.value()))
-                .map_err(|source| Error::DecoderTensorCreation { source })?;
-            inputs.push(SessionInputValue::from(value_tensor));
-        }
-
-        let mut outputs = self
-            .session
-            .run(inputs.as_slice())
-            .map_err(|source| Error::DecoderInference { source })?;
-
-        let logits_output =
-            outputs
-                .remove(DECODER_LOGITS_NAME)
-                .ok_or_else(|| Error::InvalidDecoderOutput {
-                    reason: format!("missing `{DECODER_LOGITS_NAME}` output"),
-                })?;
-        let (logits_shape, logits_data) =
-            logits_output
-                .try_extract_tensor::<f32>()
-                .map_err(|source| Error::InvalidDecoderOutput {
-                    reason: format!(
-                        "failed to extract `{DECODER_LOGITS_NAME}` as float32: {source}"
-                    ),
-                })?;
-        let logits_shape = logits_shape.as_ref();
-        validate_logits_shape(
-            logits_shape,
-            batch_size,
-            sequence_length,
-            self.config.vocab_size,
-        )?;
-        let logits = Logits::new(
-            logits_data.to_vec(),
-            usize::try_from(logits_shape[0]).expect("validated non-negative batch size"),
-            usize::try_from(logits_shape[1]).expect("validated non-negative sequence length"),
-            usize::try_from(logits_shape[2]).expect("validated non-negative vocabulary size"),
-        )?;
-
-        let updated_cache = extract_updated_cache(
-            &mut outputs,
-            batch_size,
-            total_sequence_length,
-            &self.config,
-        )?;
-
-        Ok(DecoderOutput::new(logits, updated_cache))
+        Ok(logits)
     }
 }
 
@@ -616,16 +669,32 @@ fn validate_decoder_inputs(
     Ok(total_sequence_length)
 }
 
-fn extract_updated_cache(
+fn update_cache_from_outputs(
     outputs: &mut ort::session::SessionOutputs<'_>,
+    kv_cache: &mut KvCache,
     batch_size: usize,
     total_sequence_length: usize,
     config: &DecoderConfig,
-) -> Result<KvCache> {
-    let mut layers = Vec::with_capacity(config.num_hidden_layers);
+    strategy: KvUpdateStrategy,
+) -> Result<()> {
+    let old_seq = kv_cache.past_sequence_length();
+    let heads = config.num_key_value_heads;
+    let head_dim = config.head_dim;
+
     for layer_index in 0..config.num_hidden_layers {
         let key_name = present_key_name(layer_index);
-        let (key_shape, key_data) = extract_f32_output(outputs, &key_name)?;
+        let key_output = outputs
+            .remove(&key_name)
+            .ok_or_else(|| Error::InvalidDecoderOutput {
+                reason: format!("missing `{key_name}` output"),
+            })?;
+        let (key_shape, key_present) =
+            key_output.try_extract_tensor::<f32>().map_err(|source| {
+                Error::InvalidDecoderOutput {
+                    reason: format!("failed to extract `{key_name}` as float32: {source}"),
+                }
+            })?;
+        let key_shape = key_shape.as_ref().to_vec();
         validate_cache_output_shape(
             &key_shape,
             &key_name,
@@ -635,7 +704,19 @@ fn extract_updated_cache(
         )?;
 
         let value_name = present_value_name(layer_index);
-        let (value_shape, value_data) = extract_f32_output(outputs, &value_name)?;
+        let value_output =
+            outputs
+                .remove(&value_name)
+                .ok_or_else(|| Error::InvalidDecoderOutput {
+                    reason: format!("missing `{value_name}` output"),
+                })?;
+        let (value_shape, value_present) =
+            value_output.try_extract_tensor::<f32>().map_err(|source| {
+                Error::InvalidDecoderOutput {
+                    reason: format!("failed to extract `{value_name}` as float32: {source}"),
+                }
+            })?;
+        let value_shape = value_shape.as_ref().to_vec();
         validate_cache_output_shape(
             &value_shape,
             &value_name,
@@ -644,35 +725,102 @@ fn extract_updated_cache(
             config,
         )?;
 
-        layers.push(LayerCache::new(key_data, value_data));
+        let layer = &mut kv_cache.layers_mut()[layer_index];
+        match strategy {
+            KvUpdateStrategy::FullCopyReplace => {
+                profiling::record_kv_extract_bytes(std::mem::size_of_val(key_present));
+                profiling::record_kv_extract_bytes(std::mem::size_of_val(value_present));
+                *layer.key_mut() = key_present.to_vec();
+                *layer.value_mut() = value_present.to_vec();
+            }
+            KvUpdateStrategy::ReusableBuffers => {
+                profiling::record_kv_extract_bytes(std::mem::size_of_val(key_present));
+                profiling::record_kv_extract_bytes(std::mem::size_of_val(value_present));
+                copy_into_reused_buffer(layer.key_mut(), key_present);
+                copy_into_reused_buffer(layer.value_mut(), value_present);
+            }
+            KvUpdateStrategy::DeltaExtractOnly => {
+                let copied = apply_delta_extract(
+                    layer.key_mut(),
+                    key_present,
+                    batch_size,
+                    old_seq,
+                    total_sequence_length,
+                    heads,
+                    head_dim,
+                )?;
+                profiling::record_kv_extract_bytes(copied);
+                let copied = apply_delta_extract(
+                    layer.value_mut(),
+                    value_present,
+                    batch_size,
+                    old_seq,
+                    total_sequence_length,
+                    heads,
+                    head_dim,
+                )?;
+                profiling::record_kv_extract_bytes(copied);
+            }
+        }
     }
 
-    KvCache::new(
-        layers,
-        batch_size,
-        total_sequence_length,
-        config.num_key_value_heads,
-        config.head_dim,
-    )
+    kv_cache.set_past_sequence_length(total_sequence_length);
+    Ok(())
 }
 
-fn extract_f32_output(
-    outputs: &mut ort::session::SessionOutputs<'_>,
-    name: &str,
-) -> Result<(Vec<i64>, Vec<f32>)> {
-    let output = outputs
-        .remove(name)
-        .ok_or_else(|| Error::InvalidDecoderOutput {
-            reason: format!("missing `{name}` output"),
-        })?;
-    let (shape, data) =
-        output
-            .try_extract_tensor::<f32>()
-            .map_err(|source| Error::InvalidDecoderOutput {
-                reason: format!("failed to extract `{name}` as float32: {source}"),
-            })?;
+fn copy_into_reused_buffer(dst: &mut Vec<f32>, src: &[f32]) {
+    dst.clear();
+    dst.extend_from_slice(src);
+}
 
-    Ok((shape.as_ref().to_vec(), data.to_vec()))
+fn apply_delta_extract(
+    dst: &mut Vec<f32>,
+    present: &[f32],
+    batch_size: usize,
+    old_seq: usize,
+    new_seq: usize,
+    heads: usize,
+    head_dim: usize,
+) -> Result<usize> {
+    let expected = values_per_tensor(batch_size, new_seq, heads, head_dim)?;
+    if present.len() != expected {
+        return Err(Error::InvalidDecoderOutput {
+            reason: format!(
+                "present tensor length {} does not match expected {expected}",
+                present.len()
+            ),
+        });
+    }
+
+    if old_seq == 0 {
+        let bytes = std::mem::size_of_val(present);
+        copy_into_reused_buffer(dst, present);
+        return Ok(bytes);
+    }
+
+    if old_seq > new_seq {
+        return Err(Error::InvalidDecoderOutput {
+            reason: format!("cannot shrink KV cache from past length {old_seq} to {new_seq}"),
+        });
+    }
+
+    // Expand (B,H,old_seq,D) -> (B,H,new_seq,D), copying only new positions from present.
+    let mut expanded = Vec::with_capacity(expected);
+    let mut copied_from_present = 0usize;
+    for batch in 0..batch_size {
+        for head in 0..heads {
+            let old_base = ((batch * heads + head) * old_seq) * head_dim;
+            let present_base = ((batch * heads + head) * new_seq) * head_dim;
+            expanded.extend_from_slice(&dst[old_base..old_base + old_seq * head_dim]);
+            let new_slice =
+                &present[present_base + old_seq * head_dim..present_base + new_seq * head_dim];
+            expanded.extend_from_slice(new_slice);
+            copied_from_present += std::mem::size_of_val(new_slice);
+        }
+    }
+
+    *dst = expanded;
+    Ok(copied_from_present)
 }
 
 fn validate_logits_shape(

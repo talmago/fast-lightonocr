@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use ort::session::Session;
 use ort::value::{TensorElementType, TensorRef, ValueType};
 
+use crate::profiling::{self, Stage};
 use crate::{Error, Result};
 
 use super::{ImageFeatures, ImageTensor, VisionConfig};
@@ -69,6 +70,7 @@ impl VisionEncoder {
     /// The returned image features have shape
     /// `(batch_size, num_merged_patches, hidden_size)`.
     pub fn encode(&mut self, image_tensor: &ImageTensor) -> Result<ImageFeatures> {
+        let _encoder_timer = profiling::start(Stage::VisionEncoder);
         validate_image_tensor(image_tensor, &self.config)?;
 
         let (batch_size, channels, height, width) = image_tensor.shape();
@@ -81,10 +83,12 @@ impl VisionEncoder {
         let input = TensorRef::from_array_view((input_shape, image_tensor.as_slice()))
             .map_err(|source| Error::VisionTensorCreation { source })?;
 
-        let mut outputs = self
-            .session
-            .run(ort::inputs! { VISION_INPUT_NAME => input })
-            .map_err(|source| Error::VisionInference { source })?;
+        let mut outputs = {
+            let _timer = profiling::start(Stage::VisionOnnx);
+            self.session
+                .run(ort::inputs! { VISION_INPUT_NAME => input })
+                .map_err(|source| Error::VisionInference { source })?
+        };
         let output =
             outputs
                 .remove(VISION_OUTPUT_NAME)

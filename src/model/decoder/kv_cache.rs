@@ -27,6 +27,14 @@ impl LayerCache {
     pub fn value(&self) -> &[f32] {
         &self.value
     }
+
+    pub(crate) fn key_mut(&mut self) -> &mut Vec<f32> {
+        &mut self.key
+    }
+
+    pub(crate) fn value_mut(&mut self) -> &mut Vec<f32> {
+        &mut self.value
+    }
 }
 
 /// Opaque decoder key/value cache passed between decoder invocations.
@@ -178,6 +186,43 @@ impl KvCache {
     /// Returns whether the cache contains no past sequence positions.
     pub fn is_empty(&self) -> bool {
         self.past_sequence_length == 0
+    }
+
+    pub(crate) fn layers_mut(&mut self) -> &mut [LayerCache] {
+        &mut self.layers
+    }
+
+    pub(crate) fn set_past_sequence_length(&mut self, past_sequence_length: usize) {
+        self.past_sequence_length = past_sequence_length;
+    }
+}
+
+/// Experimental host-side KV cache update strategy.
+///
+/// Selected at runtime via `LIGHTONOCR_KV_STRATEGY` for investigation builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum KvUpdateStrategy {
+    /// Allocate a fresh `Vec` for every present tensor (production baseline).
+    #[default]
+    FullCopyReplace,
+    /// Reuse previous layer buffers when capacity allows; still copy full present.
+    ReusableBuffers,
+    /// Reuse buffers; copy retained positions from the previous cache and only
+    /// the new token slice(s) from each present tensor.
+    DeltaExtractOnly,
+}
+
+impl KvUpdateStrategy {
+    pub(crate) fn from_env() -> Self {
+        match std::env::var("LIGHTONOCR_KV_STRATEGY")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "reusable" | "reusable_buffers" => Self::ReusableBuffers,
+            "delta" | "delta_extract" | "delta_extract_only" => Self::DeltaExtractOnly,
+            _ => Self::FullCopyReplace,
+        }
     }
 }
 
