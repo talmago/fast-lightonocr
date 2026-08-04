@@ -23,40 +23,42 @@ document parsing.
 
 ## 📦 Installation
 
-Install with pip:
+Install the package with the desired ONNX Runtime backend.
 
-```bash
-pip install fast-lightonocr
-```
-
-Prebuilt wheels are currently published for Linux x86_64 and macOS arm64.
-macOS x86_64/Intel wheels are not published because ONNX Runtime 1.28 does not
-provide a compatible Python wheel for that platform. Intel macOS source builds
-require a compatible ONNX Runtime library supplied explicitly with
-`ORT_DYLIB_PATH`.
-
-> **Note**
->
-> The default build profile targets CPU execution. When installing from source,
-> the build backend automatically discovers a compatible ONNX Runtime. If
-> `ORT_DYLIB_PATH` is set, it is used directly; otherwise, the build backend
-> locates (or provisions, in the isolated build environment) a compatible ONNX
-> Runtime, validates compatibility with ONNX Runtime 1.28.x / C API level 27,
-> and configures Cargo accordingly.
-
-If you also want the Python ONNX Runtime package installed into your application
-environment, install the CPU extra:
+### CPU
 
 ```bash
 pip install "fast-lightonocr[cpu]"
 ```
 
-CUDA packaging is available through a separate build profile, although CUDA
-execution is not yet fully supported:
+### CUDA
 
 ```bash
-BUILD_PROFILE=cuda pip install "fast-lightonocr[cuda]"
+pip install "fast-lightonocr[cuda]"
 ```
+
+> **Note**
+>
+> CUDA packaging is available through a dedicated build profile, although CUDA
+> execution is not yet fully supported.
+
+Prebuilt wheels are currently published for Linux x86_64 and macOS arm64. These
+wheels bundle the required ONNX Runtime shared library, so no additional runtime
+installation or environment configuration is required.
+
+macOS x86_64 (Intel) wheels are not published because ONNX Runtime 1.28 does
+not provide a compatible Python wheel for that platform.
+
+### Building from source
+
+When installing from source, the build backend automatically discovers a
+compatible ONNX Runtime for the selected build profile.
+
+If `ORT_DYLIB_PATH` is set, it is used directly. Otherwise, the build backend
+installs the appropriate ONNX Runtime build dependency into the isolated build
+environment, validates compatibility with ONNX Runtime 1.28.x (C API level 27),
+configures Cargo automatically, and bundles the required native runtime library
+into the resulting wheel.
 
 ---
 
@@ -155,42 +157,56 @@ model = LightOnOCR.from_pretrained(
 
 ## 🛠 Development
 
-Install the project with Poetry:
+Install the project and development dependencies:
 
 ```bash
 poetry install --with dev
 ```
 
-Install the extension in editable mode:
+### Editable development
 
-```bash
-maturin develop --release --features load-dynamic
-```
-
-Build a wheel:
-
-```bash
-pip wheel . --wheel-dir dist
-```
-
-Packaged builds use the `cpu` build profile by default, which does not enable
-any Cargo features. The Python build backend locates ONNX Runtime from
-`ORT_DYLIB_PATH` or from the Python `onnxruntime` package it installs into the
-isolated build environment during source builds, and validates ONNX Runtime
-1.28.x compatibility, including C API level 27.
-
-The `load-dynamic` feature is intended for local development only. When using
-dynamic ONNX Runtime loading, set:
+For local development, install the extension in editable mode with dynamic ONNX
+Runtime loading:
 
 ```bash
 export ORT_DYLIB_PATH=/path/to/libonnxruntime
+poetry run maturin develop --release --features load-dynamic
 ```
 
-The CUDA build profile is wired for future provider support:
+For example, when using the Python `onnxruntime` package on macOS:
 
 ```bash
-BUILD_PROFILE=cuda pip install ".[cuda]"
+export ORT_DYLIB_PATH="$(python -c \
+'import onnxruntime, pathlib; print(next((pathlib.Path(onnxruntime.__file__).parent / "capi").glob("libonnxruntime*.dylib")))')"
 ```
+
+### Building a wheel
+
+To build a distributable wheel, use the project's Python build backend:
+
+```bash
+poetry run pip wheel . --wheel-dir dist
+```
+
+The default build profile targets CPU execution and does not enable any Cargo
+features. During source builds, the build backend automatically discovers a
+compatible ONNX Runtime from `ORT_DYLIB_PATH` or from the selected build
+profile's Python runtime package, validates compatibility with ONNX Runtime
+1.28.x (C API level 27), configures Cargo, and produces a wheel containing the
+required native runtime libraries.
+
+To build using the CUDA profile:
+
+```bash
+BUILD_PROFILE=cuda poetry run pip wheel . --wheel-dir dist
+```
+
+> **Note**
+>
+> Running `maturin develop` **without** `--features load-dynamic` is not
+> supported. The custom build backend is responsible for configuring ONNX
+> Runtime linking during production builds, whereas editable development uses
+> the `load-dynamic` feature together with `ORT_DYLIB_PATH`.
 
 ---
 

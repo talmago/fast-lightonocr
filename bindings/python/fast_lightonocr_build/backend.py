@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import maturin
+from packaging.requirements import Requirement
 
 PROFILE_ENV = "BUILD_PROFILE"
 PROFILE_CONFIG_KEYS = (
@@ -32,6 +33,7 @@ PROFILE_CONFIG_KEYS = (
 REQUIRED_ORT_MAJOR = 1
 REQUIRED_ORT_MINOR = 28
 REQUIRED_ORT_API_LEVEL = 27
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 ORT_DYLIB_PATH = "ORT_DYLIB_PATH"
@@ -49,12 +51,27 @@ SHARED_LIBRARY_PATH_ENV = {
 
 @dataclass(frozen=True)
 class BuildProfile:
-    """Python build profile mapped to Cargo and runtime requirements."""
+    """Python build profile mapped to Cargo features and build requirements."""
 
     name: str
     cargo_features: tuple[str, ...]
-    runtime_distribution: str
     build_requirements: tuple[str, ...]
+
+    @property
+    def runtime_distribution(self) -> str:
+        """Return the ONNX Runtime distribution name."""
+
+        if not self.build_requirements:
+            raise RuntimeError(
+                f"Build profile {self.name!r} defines no build requirements."
+            )
+
+        return Requirement(self.build_requirements[0]).name
+
+
+#
+# PEP 517 hooks
+#
 
 
 def build_wheel(
@@ -101,7 +118,7 @@ def prepare_metadata_for_build_wheel(
     metadata_directory: str,
     config_settings: Mapping[str, Any] | None = None,
 ) -> str:
-    """Prepare metadata using the same Cargo feature profile as wheel builds."""
+    """Prepare metadata using the selected Cargo feature profile."""
 
     return maturin.prepare_metadata_for_build_wheel(
         metadata_directory,
@@ -118,7 +135,10 @@ def build_sdist(
 ) -> str:
     """Build a source distribution through maturin."""
 
-    return maturin.build_sdist(sdist_directory, config_settings)
+    return maturin.build_sdist(
+        sdist_directory,
+        config_settings,
+    )
 
 
 def get_requires_for_build_wheel(
@@ -126,13 +146,14 @@ def get_requires_for_build_wheel(
 ) -> list[str]:
     """Return maturin and profile-specific build requirements."""
 
-    requirements = maturin.get_requires_for_build_wheel(config_settings)
+    requirements = list(maturin.get_requires_for_build_wheel(config_settings))
     settings = _profiled_config_settings(config_settings)
 
     if not _uses_load_dynamic(settings) and not _has_runtime_override():
-        requirements.extend(_selected_profile(settings).build_requirements)
+        profile = _selected_profile(settings)
+        requirements.extend(profile.build_requirements)
 
-    return requirements
+    return list(dict.fromkeys(requirements))
 
 
 get_requires_for_build_editable = get_requires_for_build_wheel
@@ -146,8 +167,18 @@ def get_requires_for_build_sdist(
     return maturin.get_requires_for_build_sdist(config_settings)
 
 
+#
+# Build environment
+#
+
+
 class _configured_build_environment:
-    def __init__(self, config_settings: Mapping[str, Any] | None) -> None:
+    """Temporarily configure ONNX Runtime linking for a maturin build."""
+
+    def __init__(
+        self,
+        config_settings: Mapping[str, Any] | None,
+    ) -> None:
         self._settings = config_settings
         self._old_env: dict[str, str | None] = {}
 
@@ -158,16 +189,21 @@ class _configured_build_environment:
         profile = _selected_profile(self._settings)
         runtime = _configured_onnx_runtime(profile)
         link_dir = _prepare_link_directory(runtime)
+
         self._set_env(ORT_LIB_PATH, str(link_dir))
         self._set_env(ORT_LIB_LOCATION, str(link_dir))
         self._set_env(ORT_PREFER_DYNAMIC_LINK, "1")
+
+        # The staged directory provides conventional linker aliases, while the
+        # original runtime directory may contain additional runtime libraries.
         self._prepend_library_path(link_dir)
         self._prepend_library_path(runtime.parent)
 
         print(
             "Using ONNX Runtime "
             f"{_runtime_version(runtime)} from {runtime} "
-            f"for the fast-lightonocr {profile.name} build profile"
+            f"for the fast-lightonocr {profile.name} build profile",
+            flush=True,
         )
 
     def __exit__(self, *_exc_info: object) -> None:
@@ -180,6 +216,7 @@ class _configured_build_environment:
     def _set_env(self, key: str, value: str) -> None:
         if key not in self._old_env:
             self._old_env[key] = os.environ.get(key)
+
         os.environ[key] = value
 
     def _prepend_library_path(self, path: Path) -> None:
@@ -189,9 +226,16 @@ class _configured_build_environment:
 
         current = os.environ.get(key)
         value = str(path)
+
         if current:
-            value = os.pathsep.join([value, current])
+            value = os.pathsep.join((value, current))
+
         self._set_env(key, value)
+
+
+#
+# Build profile configuration
+#
 
 
 def _profiled_config_settings(
@@ -199,6 +243,8 @@ def _profiled_config_settings(
     *,
     repair_wheel: bool = False,
 ) -> dict[str, Any]:
+    """Return maturin settings for the selected build profile."""
+
     settings = dict(config_settings or {})
     profile = _selected_profile(settings)
 
@@ -206,52 +252,62 @@ def _profiled_config_settings(
     args = _merge_cargo_features(args, profile.cargo_features)
 
     if repair_wheel and not _uses_load_dynamic(settings):
-        args = _set_maturin_option(
-            args,
-            "--auditwheel",
-            "repair",
-        )
+        # Maturin's PEP 517 backend defaults to `--compatibility off`,
+        # which produces native Linux wheels. Override it with the default
+        # CLI behavior so repaired wheels receive the appropriate PyPI
+        # compatibility tag.
+        args = _with_auditwheel_mode(args, "repair")
+        args = _with_compatibility(args, "pypi")
 
     settings["maturin.build-args"] = args
     return settings
 
 
-def _set_maturin_option(
+def _with_auditwheel_mode(
     args: list[str],
-    option: str,
-    value: str,
+    mode: str,
 ) -> list[str]:
-    """Set a maturin CLI option."""
+    """Set maturin's wheel-repair mode unless explicitly configured."""
 
-    result: list[str] = []
+    for index, arg in enumerate(args):
+        if arg == "--auditwheel":
+            if index + 1 >= len(args):
+                raise ValueError("maturin --auditwheel was passed without a mode")
+            return args
 
-    i = 0
-    while i < len(args):
-        arg = args[i]
+        if arg.startswith("--auditwheel="):
+            return args
 
-        if arg == option:
-            if i + 1 >= len(args):
-                raise ValueError(f"{option} was passed without a value")
-            i += 2
-            continue
+        if arg == "--skip-auditwheel":
+            return args
 
-        if arg.startswith(f"{option}="):
-            i += 1
-            continue
-
-        if arg == "--skip-auditwheel" and option == "--auditwheel":
-            i += 1
-            continue
-
-        result.append(arg)
-        i += 1
-
-    result.extend([option, value])
-    return result
+    return [*args, "--auditwheel", mode]
 
 
-def _selected_profile(config_settings: Mapping[str, Any] | None) -> BuildProfile:
+def _with_compatibility(
+    args: list[str],
+    policy: str,
+) -> list[str]:
+    """Set maturin's compatibility policy unless explicitly configured."""
+
+    for arg in args:
+        if arg in ("--compatibility", "--manylinux"):
+            return args
+
+        if arg.startswith("--compatibility="):
+            return args
+
+        if arg.startswith("--manylinux="):
+            return args
+
+    return [*args, "--compatibility", policy]
+
+
+def _selected_profile(
+    config_settings: Mapping[str, Any] | None,
+) -> BuildProfile:
     raw = os.environ.get(PROFILE_ENV)
+
     if raw is None:
         for key in PROFILE_CONFIG_KEYS:
             value = _config_value(config_settings, key)
@@ -261,6 +317,7 @@ def _selected_profile(config_settings: Mapping[str, Any] | None) -> BuildProfile
 
     profiles = _build_profiles()
     name = (raw or _default_profile_name()).strip().lower().replace("_", "-")
+
     try:
         return profiles[name]
     except KeyError as exc:
@@ -273,14 +330,19 @@ def _selected_profile(config_settings: Mapping[str, Any] | None) -> BuildProfile
 
 @lru_cache
 def _build_profiles() -> dict[str, BuildProfile]:
-    profile_configs = _fast_lightonocr_tool_config().get("build-profiles", {})
+    profile_configs = _fast_lightonocr_tool_config().get(
+        "build-profiles",
+        {},
+    )
+
     profiles: dict[str, BuildProfile] = {}
+
     for raw_name, profile_config in profile_configs.items():
         name = raw_name.strip().lower().replace("_", "-")
+
         profiles[name] = BuildProfile(
             name=name,
             cargo_features=tuple(profile_config.get("cargo-features", ())),
-            runtime_distribution=profile_config["runtime-distribution"],
             build_requirements=tuple(profile_config.get("build-requirements", ())),
         )
 
@@ -293,7 +355,11 @@ def _build_profiles() -> dict[str, BuildProfile]:
 
 
 def _default_profile_name() -> str:
-    build_config = _fast_lightonocr_tool_config().get("build", {})
+    build_config = _fast_lightonocr_tool_config().get(
+        "build",
+        {},
+    )
+
     return str(build_config.get("default-profile", "cpu"))
 
 
@@ -307,7 +373,10 @@ def _fast_lightonocr_tool_config() -> dict[str, Any]:
     with (PROJECT_ROOT / "pyproject.toml").open("rb") as file:
         pyproject = tomllib.load(file)
 
-    return pyproject.get("tool", {}).get("fast-lightonocr", {})
+    return pyproject.get("tool", {}).get(
+        "fast-lightonocr",
+        {},
+    )
 
 
 def _config_value(
@@ -318,11 +387,19 @@ def _config_value(
         return None
 
     value = config_settings[key]
+
     if isinstance(value, str):
         return value
-    if isinstance(value, list | tuple) and value:
+
+    if isinstance(value, (list, tuple)) and value:
         return str(value[-1])
+
     return str(value)
+
+
+#
+# Maturin arguments and Cargo features
+#
 
 
 def _merge_cargo_features(
@@ -330,7 +407,7 @@ def _merge_cargo_features(
     cargo_features: tuple[str, ...],
 ) -> list[str]:
     if not cargo_features:
-        return args
+        return list(args)
 
     merged = list(args)
     wanted = list(cargo_features)
@@ -338,35 +415,41 @@ def _merge_cargo_features(
     for index, arg in enumerate(merged):
         if arg == "--all-features":
             return merged
+
         if arg == "--features":
             if index + 1 >= len(merged):
                 raise ValueError("maturin --features was passed without a feature list")
-            merged[index + 1] = _format_features(
-                _parse_features(merged[index + 1]) + wanted
-            )
+
+            current = _parse_features(merged[index + 1])
+            merged[index + 1] = _format_features(current + wanted)
             return merged
+
         if arg.startswith("--features="):
-            current = arg.split("=", 1)[1]
-            merged[index] = "--features=" + _format_features(
-                _parse_features(current) + wanted
-            )
+            current = _parse_features(arg.split("=", 1)[1])
+            merged[index] = "--features=" + _format_features(current + wanted)
             return merged
 
     merged.extend(["--features", _format_features(wanted)])
     return merged
 
 
-def _uses_load_dynamic(config_settings: Mapping[str, Any] | None) -> bool:
+def _uses_load_dynamic(
+    config_settings: Mapping[str, Any] | None,
+) -> bool:
     args = maturin.get_maturin_pep517_args(config_settings)
+
     if "--all-features" in args:
         return True
 
     for index, arg in enumerate(args):
         if arg == "--features" and index + 1 < len(args):
-            if "load-dynamic" in _parse_features(args[index + 1]):
+            features = _parse_features(args[index + 1])
+            if "load-dynamic" in features:
                 return True
+
         elif arg.startswith("--features="):
-            if "load-dynamic" in _parse_features(arg.split("=", 1)[1]):
+            features = _parse_features(arg.split("=", 1)[1])
+            if "load-dynamic" in features:
                 return True
 
     return False
@@ -380,23 +463,38 @@ def _format_features(features: list[str]) -> str:
     return ",".join(dict.fromkeys(features))
 
 
+#
+# ONNX Runtime discovery and validation
+#
+
+
 def _has_runtime_override() -> bool:
     return any(
         os.environ.get(name)
-        for name in (ORT_DYLIB_PATH, ORT_LIB_PATH, ORT_LIB_LOCATION)
+        for name in (
+            ORT_DYLIB_PATH,
+            ORT_LIB_PATH,
+            ORT_LIB_LOCATION,
+        )
     )
 
 
-def _configured_onnx_runtime(profile: BuildProfile) -> Path:
+def _configured_onnx_runtime(
+    profile: BuildProfile,
+) -> Path:
     if dylib := os.environ.get(ORT_DYLIB_PATH):
         runtime = Path(dylib).expanduser()
+
         if not runtime.is_file():
             raise RuntimeError(
                 f"{ORT_DYLIB_PATH} points to {runtime}, but that file does not exist"
             )
+
         return _validate_onnx_runtime(runtime)
 
-    if lib_dir := os.environ.get(ORT_LIB_PATH) or os.environ.get(ORT_LIB_LOCATION):
+    lib_dir = os.environ.get(ORT_LIB_PATH) or os.environ.get(ORT_LIB_LOCATION)
+
+    if lib_dir:
         runtime = _find_runtime_library(Path(lib_dir).expanduser())
         return _validate_onnx_runtime(runtime)
 
@@ -404,7 +502,9 @@ def _configured_onnx_runtime(profile: BuildProfile) -> Path:
     return _validate_onnx_runtime(runtime)
 
 
-def _discover_python_onnx_runtime(profile: BuildProfile) -> Path:
+def _discover_python_onnx_runtime(
+    profile: BuildProfile,
+) -> Path:
     try:
         importlib.metadata.version(profile.runtime_distribution)
     except importlib.metadata.PackageNotFoundError as exc:
@@ -413,21 +513,26 @@ def _discover_python_onnx_runtime(profile: BuildProfile) -> Path:
             if profile.build_requirements
             else profile.runtime_distribution
         )
+
         raise RuntimeError(
-            "could not find an installed ONNX Runtime distribution for the "
-            f"fast-lightonocr {profile.name} build profile. Install "
-            f"{requirement!r}, install with the matching Python extra, or set "
-            f"{ORT_DYLIB_PATH} to a compatible ONNX Runtime library."
+            "could not find an installed ONNX Runtime "
+            "distribution for the fast-lightonocr "
+            f"{profile.name} build profile. Install "
+            f"{requirement!r}, install with the matching "
+            f"Python extra, or set {ORT_DYLIB_PATH} to a "
+            "compatible ONNX Runtime library."
         ) from exc
 
     spec = importlib.util.find_spec("onnxruntime")
+
     if spec is None or not spec.submodule_search_locations:
         raise RuntimeError(
-            f"{profile.runtime_distribution!r} is installed, but the "
-            "'onnxruntime' package could not be located"
+            f"{profile.runtime_distribution!r} is installed, "
+            "but the 'onnxruntime' package could not be located"
         )
 
     package_dir = Path(next(iter(spec.submodule_search_locations)))
+
     return _find_runtime_library(package_dir / "capi")
 
 
@@ -442,10 +547,12 @@ def _find_runtime_library(directory: Path) -> Path:
         (path for path in directory.iterdir() if _is_runtime_library(path)),
         key=_library_sort_key,
     )
+
     if not candidates:
         raise RuntimeError(
             f"could not find an ONNX Runtime shared library in {directory}"
         )
+
     return candidates[0]
 
 
@@ -455,12 +562,15 @@ def _is_runtime_library(path: Path) -> bool:
 
     name = path.name
     system = platform.system()
+
     if system == "Darwin":
         return name == "libonnxruntime.dylib" or (
             name.startswith("libonnxruntime.") and name.endswith(".dylib")
         )
+
     if system == "Windows":
         return name.lower() == "onnxruntime.dll"
+
     return name == "libonnxruntime.so" or name.startswith("libonnxruntime.so.")
 
 
@@ -471,8 +581,12 @@ def _library_sort_key(path: Path) -> tuple[int, str]:
         "FreeBSD": "libonnxruntime.so",
         "Windows": "onnxruntime.dll",
     }
+
     alias = aliases.get(platform.system())
-    return (0 if path.name == alias else 1, path.name)
+    return (
+        0 if path.name == alias else 1,
+        path.name,
+    )
 
 
 def _validate_onnx_runtime(runtime: Path) -> Path:
@@ -481,16 +595,18 @@ def _validate_onnx_runtime(runtime: Path) -> Path:
 
     if major != REQUIRED_ORT_MAJOR or minor < REQUIRED_ORT_MINOR:
         raise RuntimeError(
-            f"ONNX Runtime {version} at {runtime} is not supported. "
-            "fast-lightonocr expects ONNX Runtime 1.28.x or a later "
-            f"1.x release that exposes C API level {REQUIRED_ORT_API_LEVEL}."
+            f"ONNX Runtime {version} at {runtime} is not "
+            "supported. fast-lightonocr expects ONNX Runtime "
+            "1.28.x or a later 1.x release that exposes "
+            f"C API level {REQUIRED_ORT_API_LEVEL}."
         )
 
     if not has_required_api:
         raise RuntimeError(
-            f"ONNX Runtime {version} at {runtime} does not expose required "
-            f"C API level {REQUIRED_ORT_API_LEVEL}. Use ONNX Runtime 1.28.x "
-            "or a later compatible 1.x runtime."
+            f"ONNX Runtime {version} at {runtime} does not "
+            f"expose required C API level "
+            f"{REQUIRED_ORT_API_LEVEL}. Use ONNX Runtime "
+            "1.28.x or a later compatible 1.x runtime."
         )
 
     return runtime
@@ -501,7 +617,9 @@ def _runtime_version(runtime: Path) -> str:
     return version
 
 
-def _inspect_onnx_runtime(runtime: Path) -> tuple[str, bool]:
+def _inspect_onnx_runtime(
+    runtime: Path,
+) -> tuple[str, bool]:
     try:
         loader = ctypes.WinDLL if platform.system() == "Windows" else ctypes.CDLL
         library = loader(str(runtime))
@@ -516,60 +634,109 @@ def _inspect_onnx_runtime(runtime: Path) -> tuple[str, bool]:
 
     class OrtApiBase(ctypes.Structure):
         _fields_ = [
-            ("GetApi", calling_convention(ctypes.c_void_p, ctypes.c_uint32)),
-            ("GetVersionString", calling_convention(ctypes.c_char_p)),
+            (
+                "GetApi",
+                calling_convention(
+                    ctypes.c_void_p,
+                    ctypes.c_uint32,
+                ),
+            ),
+            (
+                "GetVersionString",
+                calling_convention(ctypes.c_char_p),
+            ),
         ]
 
     try:
         get_api_base = library.OrtGetApiBase
     except AttributeError as exc:
         raise RuntimeError(
-            f"{runtime} does not export OrtGetApiBase and is not an "
-            "ONNX Runtime C API library"
+            f"{runtime} does not export OrtGetApiBase "
+            "and is not an ONNX Runtime C API library"
         ) from exc
 
     get_api_base.restype = ctypes.c_void_p
     base_ptr = get_api_base()
+
     if not base_ptr:
         raise RuntimeError(f"{runtime} returned a null OrtApiBase pointer")
 
-    base = ctypes.cast(base_ptr, ctypes.POINTER(OrtApiBase)).contents
+    base = ctypes.cast(
+        base_ptr,
+        ctypes.POINTER(OrtApiBase),
+    ).contents
+
     version_bytes = base.GetVersionString()
-    version = version_bytes.decode("utf-8", errors="replace")
+    if not version_bytes:
+        raise RuntimeError(f"{runtime} returned a null version string")
+
+    version = version_bytes.decode(
+        "utf-8",
+        errors="replace",
+    )
     has_required_api = bool(base.GetApi(REQUIRED_ORT_API_LEVEL))
+
     return version, has_required_api
 
 
-def _parse_version(version: str) -> tuple[int, int, int]:
-    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", version)
+def _parse_version(
+    version: str,
+) -> tuple[int, int, int]:
+    match = re.match(
+        r"^(\d+)\.(\d+)(?:\.(\d+))?",
+        version,
+    )
+
     if match is None:
         raise RuntimeError(f"could not parse ONNX Runtime version string {version!r}")
 
     major = int(match.group(1))
     minor = int(match.group(2))
     patch = int(match.group(3) or 0)
+
     return major, minor, patch
+
+
+#
+# Linker staging
+#
 
 
 def _prepare_link_directory(runtime: Path) -> Path:
     link_dir = Path(tempfile.mkdtemp(prefix="fast-lightonocr-ort-"))
-    atexit.register(shutil.rmtree, link_dir, ignore_errors=True)
+
+    atexit.register(
+        shutil.rmtree,
+        link_dir,
+        ignore_errors=True,
+    )
 
     for path in runtime.parent.iterdir():
         if _should_copy_runtime_artifact(path):
-            _link_or_copy(path, link_dir / path.name)
+            _link_or_copy(
+                path,
+                link_dir / path.name,
+            )
 
     for alias in _link_alias_names():
-        _link_or_copy(runtime, link_dir / alias)
+        _link_or_copy(
+            runtime,
+            link_dir / alias,
+        )
 
     if platform.system() == "Windows":
         import_library = runtime.with_suffix(".lib")
+
         if import_library.is_file():
-            _link_or_copy(import_library, link_dir / import_library.name)
+            _link_or_copy(
+                import_library,
+                link_dir / import_library.name,
+            )
         elif not (link_dir / "onnxruntime.lib").is_file():
             raise RuntimeError(
-                "ONNX Runtime on Windows requires onnxruntime.lib for "
-                f"linking, but no import library was found next to {runtime}"
+                "ONNX Runtime on Windows requires "
+                "onnxruntime.lib for linking, but no import "
+                f"library was found next to {runtime}"
             )
 
     return link_dir
@@ -580,6 +747,7 @@ def _should_copy_runtime_artifact(path: Path) -> bool:
         return False
 
     name = path.name.lower()
+
     if platform.system() == "Windows":
         return name.startswith("onnxruntime") and (
             name.endswith(".dll") or name.endswith(".lib")
@@ -592,20 +760,36 @@ def _should_copy_runtime_artifact(path: Path) -> bool:
 
 def _link_alias_names() -> tuple[str, ...]:
     system = platform.system()
+
     if system == "Darwin":
-        return ("libonnxruntime.dylib", "libonnxruntime.1.dylib")
+        return (
+            "libonnxruntime.dylib",
+            "libonnxruntime.1.dylib",
+        )
+
     if system in {"Linux", "FreeBSD"}:
-        return ("libonnxruntime.so", "libonnxruntime.so.1")
+        return (
+            "libonnxruntime.so",
+            "libonnxruntime.so.1",
+        )
+
     if system == "Windows":
         return ("onnxruntime.dll",)
+
     return ()
 
 
-def _link_or_copy(source: Path, destination: Path) -> None:
+def _link_or_copy(
+    source: Path,
+    destination: Path,
+) -> None:
     if destination.exists():
         return
 
     try:
         destination.symlink_to(source)
     except OSError:
-        shutil.copy2(source, destination)
+        shutil.copy2(
+            source,
+            destination,
+        )

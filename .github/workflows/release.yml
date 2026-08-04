@@ -88,15 +88,13 @@ jobs:
         shell: bash
         env:
           PYTHON: /opt/python/cp311-cp311/bin/python
-          MATURIN_BUILD_ARGS: --compatibility manylinux_2_28
         run: |
           "${PYTHON}" -m pip install --upgrade pip
 
           "${PYTHON}" -m pip wheel \
             "${PYTHON_PACKAGE_DIR}" \
             --no-deps \
-            --wheel-dir dist \
-            --config-settings "maturin.build-args=${MATURIN_BUILD_ARGS}"
+            --wheel-dir dist
 
       - name: Upload wheel
         uses: actions/upload-artifact@v7
@@ -125,16 +123,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build wheel
-        env:
-          MATURIN_BUILD_ARGS: --compatibility pypi
         run: |
           python -m pip install --upgrade pip
 
           python -m pip wheel \
             "${PYTHON_PACKAGE_DIR}" \
             --no-deps \
-            --wheel-dir dist \
-            --config-settings "maturin.build-args=${MATURIN_BUILD_ARGS}"
+            --wheel-dir dist
 
       - name: Upload wheel
         uses: actions/upload-artifact@v7
@@ -181,7 +176,11 @@ jobs:
           pip install --upgrade pip
           pip install "$WHEEL"
 
-          python -c "import fast_lightonocr"
+          python - <<'PY'
+          from fast_lightonocr import LightOnOCR
+
+          print("Import succeeded:", LightOnOCR)
+          PY
 
   publish-pypi:
     name: Publish to PyPI

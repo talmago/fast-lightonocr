@@ -50,6 +50,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install \
+            packaging \
             ruff \
             "maturin[patchelf]>=1.13,<2"
 
@@ -118,6 +119,8 @@ jobs:
       - name: Verify wheel installation
         working-directory: ${{ env.PYTHON_PACKAGE_DIR }}
         run: |
+          set -euxo pipefail
+
           WHEEL="$(find dist -maxdepth 1 -name '*.whl' | head -n1)"
           test -n "$WHEEL"
 
@@ -127,18 +130,9 @@ jobs:
           . .venv-test/bin/activate
 
           python -m pip install --upgrade pip
-          python -m pip install "onnxruntime>=1.28,<2"
           python -m pip install "$WHEEL"
 
-          ORT_LIB_PATH="$(python - <<'PY'
-          from pathlib import Path
-          import onnxruntime
-          print(Path(onnxruntime.__file__).parent / "capi")
+          python - <<'PY'
+          from fast_lightonocr import LightOnOCR
+          print(LightOnOCR)
           PY
-          )"
-
-          export ORT_LIB_PATH
-          export ORT_PREFER_DYNAMIC_LINK=1
-          export LD_LIBRARY_PATH="$ORT_LIB_PATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-          python -c "import fast_lightonocr"
