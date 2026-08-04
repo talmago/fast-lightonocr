@@ -18,6 +18,10 @@
 
 ---
 
+[![Fast LightOnOCR Demo](docs/images/demo-thumbnail.png)](https://github.com/user-attachments/assets/5c7a1048-34df-4ac5-8a9a-2de5f646a090)
+
+---
+
 ## 📦 Installation
 
 ### Rust
