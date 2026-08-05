@@ -181,20 +181,21 @@ impl Decoder {
             return Ok(GenerationOutput::new(Vec::new(), FinishReason::Length));
         }
 
+        // Optional IoBinding device-KV path. Default CUDA EP uses the host KV
+        // loop below (Session::run): zero-length CUDA past tensors have been
+        // observed to segfault with ORT IoBinding on some stacks (e.g. Colab).
+        // Enable with FAST_LIGHTONOCR_CUDA_DEVICE_KV=1 for continued debugging.
         #[cfg(feature = "cuda")]
-        if let ExecutionProvider::Cuda { device_id } = self.execution_provider {
+        if let ExecutionProvider::Cuda { device_id } = self.execution_provider
+            && std::env::var_os("FAST_LIGHTONOCR_CUDA_DEVICE_KV").is_some()
+        {
             let device_id =
                 i32::try_from(device_id).map_err(|_| Error::OnnxRuntimeCompatibility {
                     reason: format!("CUDA device_id {device_id} is out of range for i32"),
                 })?;
 
             let mut generated = Vec::with_capacity(self.generation_config.max_new_tokens);
-            let mut kv_state = CudaKvState::empty(
-                &self.session,
-                &self.config,
-                decoder_input.batch_size(),
-                device_id,
-            )?;
+            let mut kv_state = CudaKvState::empty(&self.config, decoder_input.batch_size())?;
             attention_mask.reserve(self.generation_config.max_new_tokens);
 
             let hidden_size = decoder_input.hidden_size();

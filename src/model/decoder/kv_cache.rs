@@ -7,9 +7,7 @@
 use super::DecoderConfig;
 
 #[cfg(feature = "cuda")]
-use ort::memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType};
-#[cfg(feature = "cuda")]
-use ort::session::Session;
+use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
 #[cfg(feature = "cuda")]
 use ort::value::{DynValue, Tensor, TensorElementType, ValueType};
 
@@ -241,25 +239,18 @@ pub(crate) struct CudaKvState {
 
 #[cfg(feature = "cuda")]
 impl CudaKvState {
-    /// Allocates empty `(batch, kv_heads, 0, head_dim)` past tensors on CUDA.
-    pub(crate) fn empty(
-        session: &Session,
-        config: &DecoderConfig,
-        batch_size: usize,
-        device_id: i32,
-    ) -> Result<Self> {
+    /// Creates empty `(batch, kv_heads, 0, head_dim)` past tensors on the **host**.
+    ///
+    /// Zero-length past tensors are allocated on CPU on purpose: CUDA allocations
+    /// with a zero sequence dimension are unreliable with ORT IoBinding and have
+    /// been observed to segfault. After the first decode step, [`Self::promote_present`]
+    /// replaces these with device-resident present tensors.
+    pub(crate) fn empty(config: &DecoderConfig, batch_size: usize) -> Result<Self> {
         if batch_size == 0 {
             return Err(Error::InvalidKvCache {
                 reason: "batch size must be greater than zero".to_owned(),
             });
         }
-
-        let allocator =
-            Allocator::new(session, cuda_memory_info(device_id)?).map_err(|source| {
-                Error::OnnxRuntimeCompatibility {
-                    reason: format!("failed to create CUDA allocator: {source}"),
-                }
-            })?;
 
         let shape = [
             batch_size as i64,
@@ -271,16 +262,18 @@ impl CudaKvState {
         let mut past_keys = Vec::with_capacity(config.num_hidden_layers);
         let mut past_values = Vec::with_capacity(config.num_hidden_layers);
         for _ in 0..config.num_hidden_layers {
-            let key = Tensor::<f32>::new(&allocator, shape).map_err(|source| {
+            // Empty f32 buffer with a zero-length sequence axis.
+            let key = Tensor::<f32>::from_array((shape, Vec::<f32>::new())).map_err(|source| {
                 Error::OnnxRuntimeCompatibility {
-                    reason: format!("failed to allocate empty CUDA past key: {source}"),
+                    reason: format!("failed to create empty host past key: {source}"),
                 }
             })?;
-            let value = Tensor::<f32>::new(&allocator, shape).map_err(|source| {
-                Error::OnnxRuntimeCompatibility {
-                    reason: format!("failed to allocate empty CUDA past value: {source}"),
-                }
-            })?;
+            let value =
+                Tensor::<f32>::from_array((shape, Vec::<f32>::new())).map_err(|source| {
+                    Error::OnnxRuntimeCompatibility {
+                        reason: format!("failed to create empty host past value: {source}"),
+                    }
+                })?;
             past_keys.push(key.into_dyn());
             past_values.push(value.into_dyn());
         }

@@ -95,7 +95,7 @@ changing model contracts.
 ### Completed
 
 - ✅ CUDA EP registration and session wiring (`--features cuda`)
-- ✅ Device-resident decoder KV via IoBinding (CUDA generate path; host path unchanged)
+- ✅ CUDA EP generate path (default: host KV + `Session::run`; opt-in IoBinding device KV via `FAST_LIGHTONOCR_CUDA_DEVICE_KV`)
 - ✅ Expose EP / thread options through Python `runtime_kwargs`
 - ✅ Packaging notes for GPU / accelerator runtimes (wheels stay CPU-default)
 
