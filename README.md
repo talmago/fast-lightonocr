@@ -271,12 +271,15 @@ The Python bindings use the same native library and build infrastructure.
 - ✅ Sampling (temperature, top-p, top-k)
 - ✅ Streaming generation example
 - ✅ FP16 and Q4 model presets
-- ✅ Python bindings
+- ✅ Python bindings and packaging (wheels, release workflow)
+- ✅ Native CLI-style examples (`inference`, `streaming`)
+- ✅ CPU performance work (KV-cache reuse, top-k/top-p, ORT session tuning)
 - 🚧 Generation parity and deterministic seeded generation
 - 🚧 Broader processor parity coverage
-- 🚧 Performance optimizations
-- 🚧 Native CLI
-- 🚧 Python packaging hardening
+- 🚧 Non-CPU execution providers (CUDA, CoreML, DirectML)
+- 🚧 Python exposure of runtime / EP options
+
+See **[ROADMAP.md](docs/ROADMAP.md)** for milestone detail.
 
 ---
 

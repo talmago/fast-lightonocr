@@ -1,10 +1,10 @@
 # Roadmap
 
-This document tracks the remaining implementation work for **Fast LightOnOCR**.
+This document tracks remaining implementation work for **Fast LightOnOCR**.
 
-The native Rust inference pipeline is already working end to end. Remaining
-milestones focus on generation hardening, parity coverage, packaging, and
-deployment surfaces.
+The native Rust inference pipeline is working end to end, with Python packaging
+and CLI-style examples in place. Remaining milestones focus on generation
+hardening, processor parity, and non-CPU execution providers.
 
 ---
 
@@ -29,6 +29,8 @@ The core native inference path is in place:
 - Dynamic ONNX Runtime loading support
 - Python bindings with PyO3 and maturin
 - Python `from_pretrained()` download helper using `huggingface_hub`
+- Python wheel packaging (CPU/CUDA build profiles, bundled ORT, release workflow)
+- Native CLI-style examples (`inference`, `streaming`) for local OCR
 
 Existing validation covers:
 
@@ -72,45 +74,36 @@ Improve preprocessing parity with the reference implementation.
 
 Optimize inference without changing model outputs.
 
-### Planned work
+### Completed
 
-- Reduce allocations
-- Reuse ONNX tensors
 - ✅ Reuse KV-cache buffers across decode steps (in-place present-tensor copy)
 - ✅ Optimize top-k / top-p sampling (select_nth + heap nucleus; avoid full-vocab sort)
-- ✅ CPU ORT session tuning (shared builder: intra/inter threads, graph opt, RuntimeOptions wiring)
-- Benchmark inference
-- Non-CPU execution providers (CUDA / other EPs)
+- ✅ CPU ORT session tuning (shared builder: intra/inter threads, graph opt, `RuntimeOptions` wiring)
+
+### Planned work
+
+- Reduce remaining host allocations where measured
+- Reuse ONNX input tensors across decode steps where practical
+- Broader inference benchmarks (latency / tokens-per-second across presets)
+
+---
+
+## Execution Providers
+
+Wire non-CPU ONNX Runtime execution providers through `RuntimeOptions` without
+changing model contracts.
+
+### Planned work
+
+- CUDA EP registration and session wiring
+- CoreML EP (macOS / Apple Silicon)
+- DirectML EP (Windows)
+- Expose EP / thread options through the Python bindings
+- Packaging notes for GPU / accelerator runtimes (wheels may stay CPU-default)
 
 ---
 
 # 📋 Planned Milestones
-
-## Python Packaging Hardening
-
-Broaden and polish the Python distribution.
-
-### Deliverables
-
-- Python examples
-- API parity for generation options
-- Wheel metadata review
-- Release workflow
-
----
-
-## Command-Line Interface
-
-Provide a native CLI.
-
-### Planned work
-
-- OCR from images
-- Local model loading
-- Generation options
-- Markdown output
-
----
 
 ## Packaging And Release Prep
 
@@ -149,7 +142,6 @@ Regression tests are added throughout development to ensure future changes prese
 
 Potential future work includes:
 
-- GPU execution providers
 - Batched inference
 - Multi-page document support
 - PDF support
