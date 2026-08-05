@@ -1,6 +1,20 @@
 //! Decoder key/value cache representation.
+//!
+//! The host [`KvCache`] is always available. With `--features cuda`, this module
+//! also provides [`CudaKvState`] for device-resident past/present tensors used
+//! by the decoder IoBinding path.
 
 use super::DecoderConfig;
+
+#[cfg(feature = "cuda")]
+use ort::memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType};
+#[cfg(feature = "cuda")]
+use ort::session::Session;
+#[cfg(feature = "cuda")]
+use ort::value::{DynValue, Tensor, TensorElementType, ValueType};
+
+#[cfg(feature = "cuda")]
+use crate::{Error, Result};
 
 /// Key/value tensors for one decoder layer.
 ///
@@ -211,4 +225,155 @@ pub(crate) fn values_per_tensor(
         .ok_or_else(|| crate::Error::InvalidKvCache {
             reason: "KV cache tensor shape is too large".to_owned(),
         })
+}
+
+/// Device-resident KV past tensors for CUDA IoBinding decode.
+///
+/// Compiled only with `--features cuda`. Not a public API twin of [`KvCache`];
+/// it exists so the decoder can keep past/present on GPU across steps.
+#[cfg(feature = "cuda")]
+pub(crate) struct CudaKvState {
+    pub past_keys: Vec<DynValue>,
+    pub past_values: Vec<DynValue>,
+    pub past_sequence_length: usize,
+    pub batch_size: usize,
+}
+
+#[cfg(feature = "cuda")]
+impl CudaKvState {
+    /// Allocates empty `(batch, kv_heads, 0, head_dim)` past tensors on CUDA.
+    pub(crate) fn empty(
+        session: &Session,
+        config: &DecoderConfig,
+        batch_size: usize,
+        device_id: i32,
+    ) -> Result<Self> {
+        if batch_size == 0 {
+            return Err(Error::InvalidKvCache {
+                reason: "batch size must be greater than zero".to_owned(),
+            });
+        }
+
+        let allocator =
+            Allocator::new(session, cuda_memory_info(device_id)?).map_err(|source| {
+                Error::OnnxRuntimeCompatibility {
+                    reason: format!("failed to create CUDA allocator: {source}"),
+                }
+            })?;
+
+        let shape = [
+            batch_size as i64,
+            config.num_key_value_heads as i64,
+            0_i64,
+            config.head_dim as i64,
+        ];
+
+        let mut past_keys = Vec::with_capacity(config.num_hidden_layers);
+        let mut past_values = Vec::with_capacity(config.num_hidden_layers);
+        for _ in 0..config.num_hidden_layers {
+            let key = Tensor::<f32>::new(&allocator, shape).map_err(|source| {
+                Error::OnnxRuntimeCompatibility {
+                    reason: format!("failed to allocate empty CUDA past key: {source}"),
+                }
+            })?;
+            let value = Tensor::<f32>::new(&allocator, shape).map_err(|source| {
+                Error::OnnxRuntimeCompatibility {
+                    reason: format!("failed to allocate empty CUDA past value: {source}"),
+                }
+            })?;
+            past_keys.push(key.into_dyn());
+            past_values.push(value.into_dyn());
+        }
+
+        Ok(Self {
+            past_keys,
+            past_values,
+            past_sequence_length: 0,
+            batch_size,
+        })
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.past_sequence_length == 0
+    }
+
+    /// Replaces past buffers with present outputs and advances sequence length.
+    pub(crate) fn promote_present(
+        &mut self,
+        past_keys: Vec<DynValue>,
+        past_values: Vec<DynValue>,
+        total_sequence_length: usize,
+    ) {
+        self.past_keys = past_keys;
+        self.past_values = past_values;
+        self.past_sequence_length = total_sequence_length;
+    }
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn cuda_memory_info(device_id: i32) -> Result<MemoryInfo<'static>> {
+    MemoryInfo::new(
+        AllocationDevice::CUDA,
+        device_id,
+        AllocatorType::Device,
+        MemoryType::Default,
+    )
+    .map_err(|source| Error::OnnxRuntimeCompatibility {
+        reason: format!("failed to create CUDA MemoryInfo: {source}"),
+    })
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn cpu_output_memory_info() -> Result<MemoryInfo<'static>> {
+    MemoryInfo::new(
+        AllocationDevice::CPU,
+        0,
+        AllocatorType::Device,
+        MemoryType::CPUOutput,
+    )
+    .map_err(|source| Error::OnnxRuntimeCompatibility {
+        reason: format!("failed to create CPU output MemoryInfo: {source}"),
+    })
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn validate_device_cache_output(
+    value: &DynValue,
+    name: &str,
+    batch_size: usize,
+    total_sequence_length: usize,
+    config: &DecoderConfig,
+) -> Result<()> {
+    let ValueType::Tensor { ty, shape, .. } = value.dtype() else {
+        return Err(Error::InvalidDecoderOutput {
+            reason: format!("`{name}` is not a tensor"),
+        });
+    };
+    if *ty != TensorElementType::Float32 {
+        return Err(Error::InvalidDecoderOutput {
+            reason: format!("`{name}` has element type {ty:?}, expected Float32"),
+        });
+    }
+    if shape.len() != 4 {
+        return Err(Error::InvalidDecoderOutput {
+            reason: format!("`{name}` has rank {}, expected 4", shape.len()),
+        });
+    }
+    let expected = [
+        batch_size as i64,
+        config.num_key_value_heads as i64,
+        total_sequence_length as i64,
+        config.head_dim as i64,
+    ];
+    for (axis, expected_dim) in expected.into_iter().enumerate() {
+        if shape[axis] != expected_dim {
+            return Err(Error::InvalidDecoderOutput {
+                reason: format!(
+                    "`{name}` dimension {axis} is {}, expected {expected_dim}",
+                    shape[axis]
+                ),
+            });
+        }
+    }
+    Ok(())
 }

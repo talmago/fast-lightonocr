@@ -5,14 +5,23 @@ use std::path::{Path, PathBuf};
 use ort::session::{Session, SessionInputValue};
 use ort::value::{Outlet, TensorElementType, TensorRef, ValueType};
 
+#[cfg(feature = "cuda")]
+use ort::memory::MemoryInfo;
+#[cfg(feature = "cuda")]
+use ort::value::Tensor;
+
 use crate::model::InputEmbeddings;
 use crate::model::embedding_model::EmbeddingModel;
-use crate::util::RuntimeOptions;
+use crate::util::{ExecutionProvider, RuntimeOptions};
 use crate::{Error, Result};
 
 use super::attention::AttentionMask;
 use super::config::{DecoderConfig, GenerationConfig};
 use super::generation::{self, FinishReason, GenerationOutput};
+#[cfg(feature = "cuda")]
+use super::kv_cache::{
+    CudaKvState, cpu_output_memory_info, cuda_memory_info, validate_device_cache_output,
+};
 use super::kv_cache::{KvCache, values_per_tensor};
 use super::logits::Logits;
 use super::output::DecoderOutput;
@@ -47,6 +56,7 @@ pub struct Decoder {
     generation_config: GenerationConfig,
     model_path: PathBuf,
     has_cache_branch: bool,
+    execution_provider: ExecutionProvider,
     present_key_names: Vec<String>,
     present_value_names: Vec<String>,
     /// Reused host buffer for final-position logits during generation.
@@ -104,6 +114,7 @@ impl Decoder {
             generation_config,
             model_path,
             has_cache_branch,
+            execution_provider: runtime.execution_provider,
             present_key_names,
             present_value_names,
             logits_scratch: Vec::new(),
@@ -129,6 +140,12 @@ impl Decoder {
     /// Returns the ONNX model path backing this decoder.
     pub fn model_path(&self) -> &Path {
         &self.model_path
+    }
+
+    /// Returns the execution provider used when this decoder session was created.
+    #[must_use]
+    pub fn execution_provider(&self) -> ExecutionProvider {
+        self.execution_provider
     }
 
     /// Creates an empty KV cache for this decoder and batch size.
@@ -162,6 +179,72 @@ impl Decoder {
     ) -> Result<GenerationOutput> {
         if self.generation_config.max_new_tokens == 0 {
             return Ok(GenerationOutput::new(Vec::new(), FinishReason::Length));
+        }
+
+        #[cfg(feature = "cuda")]
+        if let ExecutionProvider::Cuda { device_id } = self.execution_provider {
+            let device_id =
+                i32::try_from(device_id).map_err(|_| Error::OnnxRuntimeCompatibility {
+                    reason: format!("CUDA device_id {device_id} is out of range for i32"),
+                })?;
+
+            let mut generated = Vec::with_capacity(self.generation_config.max_new_tokens);
+            let mut kv_state = CudaKvState::empty(
+                &self.session,
+                &self.config,
+                decoder_input.batch_size(),
+                device_id,
+            )?;
+            attention_mask.reserve(self.generation_config.max_new_tokens);
+
+            let hidden_size = decoder_input.hidden_size();
+            let mut step_input = InputEmbeddings::new(vec![0.0; hidden_size], 1, 1, hidden_size)?;
+            let mut using_step_input = false;
+            let mut finish_reason = FinishReason::Length;
+            let cuda_mem = cuda_memory_info(device_id)?;
+            let cpu_mem = cpu_output_memory_info()?;
+
+            for step in 0..self.generation_config.max_new_tokens {
+                let input = if using_step_input {
+                    &step_input
+                } else {
+                    &decoder_input
+                };
+                let logits = self.decode_step_cuda(
+                    input,
+                    &attention_mask,
+                    &mut kv_state,
+                    &cuda_mem,
+                    &cpu_mem,
+                    LogitsSelection::FinalPosition,
+                )?;
+
+                let next_token =
+                    generation::next_token(&self.generation_config, &logits, &mut self.rng)?;
+                self.logits_scratch = logits.into_data();
+
+                generated.push(next_token);
+                on_token(next_token);
+
+                if generation::is_eos(&self.generation_config, next_token) {
+                    finish_reason = FinishReason::EndOfSequence;
+                    break;
+                }
+
+                if step + 1 == self.generation_config.max_new_tokens {
+                    break;
+                }
+
+                embedding_model.embed_into(&[next_token], &mut step_input)?;
+                using_step_input = true;
+                if step == 0 {
+                    decoder_input = InputEmbeddings::default();
+                    attention_mask.fill_visible();
+                }
+                attention_mask.push_visible();
+            }
+
+            return Ok(GenerationOutput::new(generated, finish_reason));
         }
 
         let mut generated = Vec::with_capacity(self.generation_config.max_new_tokens);
@@ -352,6 +435,205 @@ impl Decoder {
             &self.present_value_names,
         )?;
 
+        Ok(logits)
+    }
+
+    /// CUDA IoBinding decode step: past/present stay on device; logits on host.
+    #[cfg(feature = "cuda")]
+    fn decode_step_cuda(
+        &mut self,
+        input_embeddings: &InputEmbeddings,
+        attention_mask: &AttentionMask,
+        kv_state: &mut CudaKvState,
+        cuda_mem: &MemoryInfo<'_>,
+        cpu_mem: &MemoryInfo<'_>,
+        logits_selection: LogitsSelection,
+    ) -> Result<Logits> {
+        let (batch_size, sequence_length, hidden_size) = input_embeddings.shape();
+        if batch_size != kv_state.batch_size {
+            return Err(Error::InvalidDecoderInput {
+                reason: format!(
+                    "input embeddings batch size is {batch_size}, expected {}",
+                    kv_state.batch_size
+                ),
+            });
+        }
+        if hidden_size != self.config.hidden_size {
+            return Err(Error::InvalidDecoderInput {
+                reason: format!(
+                    "input embeddings hidden size is {hidden_size}, expected {}",
+                    self.config.hidden_size
+                ),
+            });
+        }
+
+        let total_sequence_length = kv_state
+            .past_sequence_length
+            .checked_add(sequence_length)
+            .ok_or_else(|| Error::InvalidDecoderInput {
+                reason: "total sequence length is too large".to_owned(),
+            })?;
+        let expected_attention_values =
+            batch_size
+                .checked_mul(total_sequence_length)
+                .ok_or_else(|| Error::InvalidDecoderInput {
+                    reason: "attention mask shape is too large".to_owned(),
+                })?;
+        if attention_mask.len() != expected_attention_values {
+            return Err(Error::InvalidDecoderInput {
+                reason: format!(
+                    "attention mask length is {}, expected {expected_attention_values}",
+                    attention_mask.len()
+                ),
+            });
+        }
+
+        let use_cache_branch = !kv_state.is_empty();
+
+        let embeds = Tensor::from_array((
+            [
+                batch_size as i64,
+                sequence_length as i64,
+                hidden_size as i64,
+            ],
+            input_embeddings.as_slice().to_vec(),
+        ))
+        .map_err(|source| Error::DecoderTensorCreation { source })?;
+        let mask = Tensor::from_array((
+            [batch_size as i64, total_sequence_length as i64],
+            attention_mask.as_slice().to_vec(),
+        ))
+        .map_err(|source| Error::DecoderTensorCreation { source })?;
+
+        let mut binding = self
+            .session
+            .create_binding()
+            .map_err(|source| Error::DecoderInference { source })?;
+
+        binding
+            .bind_input(DECODER_INPUT_EMBEDS_NAME, &embeds)
+            .map_err(|source| Error::DecoderInference { source })?;
+        binding
+            .bind_input(DECODER_ATTENTION_MASK_NAME, &mask)
+            .map_err(|source| Error::DecoderInference { source })?;
+
+        let cache_branch_tensor = if self.has_cache_branch {
+            let tensor = Tensor::from_array(((), vec![use_cache_branch]))
+                .map_err(|source| Error::DecoderTensorCreation { source })?;
+            binding
+                .bind_input(DECODER_USE_CACHE_BRANCH_NAME, &tensor)
+                .map_err(|source| Error::DecoderInference { source })?;
+            Some(tensor)
+        } else {
+            None
+        };
+        let _cache_branch_tensor = cache_branch_tensor;
+
+        for layer_index in 0..self.config.num_hidden_layers {
+            binding
+                .bind_input(past_key_name(layer_index), &kv_state.past_keys[layer_index])
+                .map_err(|source| Error::DecoderInference { source })?;
+            binding
+                .bind_input(
+                    past_value_name(layer_index),
+                    &kv_state.past_values[layer_index],
+                )
+                .map_err(|source| Error::DecoderInference { source })?;
+        }
+
+        binding
+            .bind_output_to_device(DECODER_LOGITS_NAME, cpu_mem)
+            .map_err(|source| Error::DecoderInference { source })?;
+        for layer_index in 0..self.config.num_hidden_layers {
+            binding
+                .bind_output_to_device(present_key_name(layer_index), cuda_mem)
+                .map_err(|source| Error::DecoderInference { source })?;
+            binding
+                .bind_output_to_device(present_value_name(layer_index), cuda_mem)
+                .map_err(|source| Error::DecoderInference { source })?;
+        }
+
+        let mut outputs = self
+            .session
+            .run_binding(&binding)
+            .map_err(|source| Error::DecoderInference { source })?;
+
+        let logits_output =
+            outputs
+                .remove(DECODER_LOGITS_NAME)
+                .ok_or_else(|| Error::InvalidDecoderOutput {
+                    reason: format!("missing `{DECODER_LOGITS_NAME}` output"),
+                })?;
+        let (logits_shape, logits_data) =
+            logits_output
+                .try_extract_tensor::<f32>()
+                .map_err(|source| Error::InvalidDecoderOutput {
+                    reason: format!(
+                        "failed to extract `{DECODER_LOGITS_NAME}` as float32: {source}"
+                    ),
+                })?;
+        let logits_shape = logits_shape.as_ref();
+        validate_logits_shape(
+            logits_shape,
+            batch_size,
+            sequence_length,
+            self.config.vocab_size,
+        )?;
+
+        let logits = match logits_selection {
+            LogitsSelection::Full => Logits::new(
+                logits_data.to_vec(),
+                usize::try_from(logits_shape[0]).expect("validated non-negative batch size"),
+                usize::try_from(logits_shape[1]).expect("validated non-negative sequence length"),
+                usize::try_from(logits_shape[2]).expect("validated non-negative vocabulary size"),
+            )?,
+            LogitsSelection::FinalPosition => materialize_final_position_logits(
+                logits_data,
+                batch_size,
+                sequence_length,
+                self.config.vocab_size,
+                &mut self.logits_scratch,
+            )?,
+        };
+
+        let mut next_keys = Vec::with_capacity(self.config.num_hidden_layers);
+        let mut next_values = Vec::with_capacity(self.config.num_hidden_layers);
+        for layer_index in 0..self.config.num_hidden_layers {
+            let key_name = present_key_name(layer_index);
+            let key =
+                outputs
+                    .remove(key_name.as_str())
+                    .ok_or_else(|| Error::InvalidDecoderOutput {
+                        reason: format!("missing `{key_name}` output"),
+                    })?;
+            validate_device_cache_output(
+                &key,
+                &key_name,
+                batch_size,
+                total_sequence_length,
+                &self.config,
+            )?;
+
+            let value_name = present_value_name(layer_index);
+            let value =
+                outputs
+                    .remove(value_name.as_str())
+                    .ok_or_else(|| Error::InvalidDecoderOutput {
+                        reason: format!("missing `{value_name}` output"),
+                    })?;
+            validate_device_cache_output(
+                &value,
+                &value_name,
+                batch_size,
+                total_sequence_length,
+                &self.config,
+            )?;
+
+            next_keys.push(key);
+            next_values.push(value);
+        }
+
+        kv_state.promote_present(next_keys, next_values, total_sequence_length);
         Ok(logits)
     }
 }
