@@ -7,7 +7,9 @@ Python build profile into Cargo features and ONNX Runtime linker settings.
 from __future__ import annotations
 
 import atexit
+import base64
 import ctypes
+import hashlib
 import importlib.metadata
 import importlib.util
 import os
@@ -15,6 +17,7 @@ import platform
 import re
 import shutil
 import tempfile
+import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
@@ -87,11 +90,23 @@ def build_wheel(
     )
 
     with _configured_build_environment(settings):
-        return maturin.build_wheel(
+        wheel_name = maturin.build_wheel(
             wheel_directory,
             settings,
             metadata_directory,
         )
+
+        # CUDA only: auditwheel vendors DT_NEEDED libs, but ORT dlopen's
+        # provider plugins at EP registration. CPU wheels are left untouched.
+        profile = _selected_profile(settings)
+        if profile.name == "cuda" and not _uses_load_dynamic(settings):
+            runtime = _configured_onnx_runtime(profile)
+            _bundle_cuda_ort_provider_libraries(
+                Path(wheel_directory) / wheel_name,
+                runtime.parent,
+            )
+
+        return wheel_name
 
 
 def build_editable(
@@ -695,6 +710,197 @@ def _parse_version(
     patch = int(match.group(3) or 0)
 
     return major, minor, patch
+
+
+#
+# CUDA wheel provider-library bundling
+#
+# Only used for BUILD_PROFILE=cuda. ORT loads CUDA EP plugins via dlopen
+# next to libonnxruntime; auditwheel never sees those deps. CPU wheels skip
+# this path entirely.
+#
+
+
+def _bundle_cuda_ort_provider_libraries(wheel_path: Path, capi_dir: Path) -> None:
+    """Copy CUDA ORT provider libs into a repaired CUDA wheel's lib dir."""
+
+    providers = _cuda_ort_provider_library_paths(capi_dir)
+    if not providers:
+        raise RuntimeError(
+            "CUDA build profile requires ONNX Runtime CUDA provider libraries "
+            f"in {capi_dir} (expected libonnxruntime_providers_shared and "
+            "libonnxruntime_providers_cuda), but none were found"
+        )
+
+    if not wheel_path.is_file():
+        raise RuntimeError(f"wheel not found for provider bundling: {wheel_path}")
+
+    tmp_path = wheel_path.with_suffix(wheel_path.suffix + ".tmp")
+
+    with (
+        zipfile.ZipFile(wheel_path, "r") as zin,
+        zipfile.ZipFile(tmp_path, "w") as zout,
+    ):
+        names = zin.namelist()
+        libs_dir = _wheel_bundled_lib_dir(names)
+        if libs_dir is None:
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "CUDA wheel is missing a .libs/.dylibs directory after auditwheel "
+                "repair; cannot bundle ORT CUDA provider libraries"
+            )
+
+        dist_info = _wheel_dist_info_dir(names)
+        if dist_info is None:
+            raise RuntimeError(f"could not find *.dist-info in {wheel_path}")
+
+        record_name = f"{dist_info}/RECORD"
+        bundled_ort = _wheel_bundled_ort_library(names, libs_dir)
+        existing = set(names)
+        record_lines: list[str] = []
+
+        for info in zin.infolist():
+            if info.filename == record_name:
+                continue
+
+            data = zin.read(info.filename)
+            # Preserve member metadata (including symlinks).
+            zout.writestr(info, data)
+            if not info.filename.endswith("/"):
+                record_lines.append(_wheel_record_line(info.filename, data))
+
+        for provider in providers:
+            dest = f"{libs_dir}/{provider.name}"
+            if dest in existing:
+                continue
+
+            data = provider.read_bytes()
+            zout.writestr(dest, data)
+            record_lines.append(_wheel_record_line(dest, data))
+            print(
+                f"Bundled ORT CUDA provider library {provider.name} into {libs_dir}/",
+                flush=True,
+            )
+
+        # Provider libs typically NEEDED libonnxruntime.so.1; auditwheel may
+        # only keep a hashed filename. Add stable SONAME aliases when missing.
+        if bundled_ort is not None and platform.system() in {"Linux", "FreeBSD"}:
+            for alias in ("libonnxruntime.so", "libonnxruntime.so.1"):
+                dest = f"{libs_dir}/{alias}"
+                if dest in existing or any(
+                    item.filename == dest for item in zout.filelist
+                ):
+                    continue
+                _write_zip_symlink(zout, dest, bundled_ort)
+                record_lines.append(
+                    _wheel_record_line(dest, bundled_ort.encode("utf-8"))
+                )
+                print(
+                    f"Added ORT SONAME alias {alias} -> {bundled_ort} in {libs_dir}/",
+                    flush=True,
+                )
+
+        record_lines.sort()
+        record_body = "\n".join(record_lines) + f"\n{record_name},,\n"
+        zout.writestr(record_name, record_body)
+
+    tmp_path.replace(wheel_path)
+
+
+def _cuda_ort_provider_library_paths(capi_dir: Path) -> list[Path]:
+    """Return shared + CUDA provider libs only (skip TensorRT, etc.)."""
+
+    if not capi_dir.is_dir():
+        return []
+
+    return sorted(
+        path for path in capi_dir.iterdir() if _is_cuda_provider_library(path)
+    )
+
+
+def _is_cuda_provider_library(path: Path) -> bool:
+    if not path.is_file():
+        return False
+
+    name = path.name.lower()
+    system = platform.system()
+
+    if system == "Windows":
+        return name in {
+            "onnxruntime_providers_shared.dll",
+            "onnxruntime_providers_cuda.dll",
+        }
+
+    if system == "Darwin":
+        return name in {
+            "libonnxruntime_providers_shared.dylib",
+            "libonnxruntime_providers_cuda.dylib",
+        }
+
+    # Linux / FreeBSD: accept versioned sonames too.
+    return name.startswith("libonnxruntime_providers_shared.so") or name.startswith(
+        "libonnxruntime_providers_cuda.so"
+    )
+
+
+def _wheel_bundled_lib_dir(names: list[str]) -> str | None:
+    for name in names:
+        top = name.split("/", 1)[0]
+        if top.endswith(".libs") or top.endswith(".dylibs"):
+            return top
+    return None
+
+
+def _wheel_dist_info_dir(names: list[str]) -> str | None:
+    for name in names:
+        top = name.split("/", 1)[0]
+        if top.endswith(".dist-info"):
+            return top
+    return None
+
+
+def _wheel_bundled_ort_library(names: list[str], libs_dir: str) -> str | None:
+    prefix = f"{libs_dir}/"
+    candidates: list[str] = []
+
+    for name in names:
+        if not name.startswith(prefix) or name.endswith("/"):
+            continue
+
+        file_name = name[len(prefix) :]
+        if "/" in file_name:
+            continue
+        if "providers" in file_name.lower():
+            continue
+        if not file_name.startswith("libonnxruntime"):
+            continue
+        if ".so" not in file_name and not file_name.endswith(".dylib"):
+            continue
+        candidates.append(file_name)
+
+    if not candidates:
+        return None
+
+    # Prefer the real shared object over short SONAME aliases.
+    candidates.sort(key=lambda item: (-len(item), item))
+    return candidates[0]
+
+
+def _wheel_record_line(arcname: str, data: bytes) -> str:
+    digest = hashlib.sha256(data).digest()
+    encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return f"{arcname},sha256={encoded},{len(data)}"
+
+
+def _write_zip_symlink(
+    zf: zipfile.ZipFile,
+    link_path: str,
+    target: str,
+) -> None:
+    info = zipfile.ZipInfo(link_path)
+    info.create_system = 3  # Unix
+    info.external_attr = 0o120755 << 16  # symlink
+    zf.writestr(info, target.encode("utf-8"))
 
 
 #

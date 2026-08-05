@@ -23,13 +23,17 @@ document parsing.
 
 ## 📦 Installation
 
-Install the package with the desired ONNX Runtime backend.
+Install with the matching extra for your backend. Published wheels target
+**Linux x86_64** and **macOS arm64** (macOS Intel is not published: ONNX
+Runtime 1.28 has no compatible wheel there).
 
-### CPU
+### CPU (default)
 
 ```bash
 pip install "fast-lightonocr[cpu]"
 ```
+
+CPU wheels bundle ONNX Runtime. No extra environment setup is required.
 
 ### CUDA
 
@@ -37,9 +41,10 @@ pip install "fast-lightonocr[cpu]"
 pip install "fast-lightonocr[cuda]"
 ```
 
-CUDA wheels/builds enable the native `cuda` Cargo feature. Use a CUDA-enabled
-ONNX Runtime and compatible CUDA 13 / cuDNN stack. Select the provider at load
-time:
+Requires a CUDA-enabled package build and a compatible NVIDIA driver. The
+`cuda` extra pulls in `onnxruntime-gpu` (CUDA 13 / cuDNN) and `nvidia-cublas`.
+
+Select CUDA at load time:
 
 ```python
 model = LightOnOCR.from_pretrained(
@@ -51,27 +56,39 @@ model = LightOnOCR.from_pretrained(
 )
 ```
 
-Default published wheels remain CPU-oriented; the CUDA extra is a dedicated
-build profile. On CUDA, decoder KV past/present stay on device during generate;
-token sampling still runs on the host.
-
-Prebuilt wheels are currently published for Linux x86_64 and macOS arm64. These
-wheels bundle the required ONNX Runtime shared library, so no additional runtime
-installation or environment configuration is required for the CPU profile.
-
-macOS x86_64 (Intel) wheels are not published because ONNX Runtime 1.28 does
-not provide a compatible Python wheel for that platform.
+When `execution_provider="cuda"`, `from_pretrained` preloads the pip NVIDIA
+CUDA/cuDNN libraries (`onnxruntime.preload_dlls`), so `LD_LIBRARY_PATH` is
+usually unnecessary. CPU loads never take that path.
 
 ### Building from source
 
-When installing from source, the build backend automatically discovers a
-compatible ONNX Runtime for the selected build profile.
+Source installs use the project build backend. It discovers ONNX Runtime from
+`ORT_DYLIB_PATH` when set, otherwise from the profile’s Python ORT package,
+validates ONNX Runtime 1.28.x (C API level 27), and bundles the native runtime
+into the wheel.
 
-If `ORT_DYLIB_PATH` is set, it is used directly. Otherwise, the build backend
-installs the appropriate ONNX Runtime build dependency into the isolated build
-environment, validates compatibility with ONNX Runtime 1.28.x (C API level 27),
-configures Cargo automatically, and bundles the required native runtime library
-into the resulting wheel.
+#### CPU
+
+```bash
+pip install -v ".[cpu]"
+```
+
+# or explicitly:
+
+```bash
+BUILD_PROFILE=cpu pip install -v ".[cpu]"
+```
+
+#### CUDA
+
+```bash
+BUILD_PROFILE=cuda pip install -v ".[cuda]"
+```
+
+`BUILD_PROFILE=cuda` enables the native `cuda` Cargo feature and injects the
+ORT CUDA provider plugins (`libonnxruntime_providers_{shared,cuda}`) into the
+wheel. The `[cuda]` extra installs the CUDA 13 / cuDNN / cublas user
+libraries used at runtime.
 
 ---
 
@@ -160,9 +177,9 @@ Available presets:
 ### Generation overrides
 
 Model defaults come from Hugging Face `generation_config.json` (typically
-`do_sample=True`, `temperature=0.2`, `top_k=0`, `top_p=0.9`). Override them at
-load time with `generation_kwargs` (merged onto the decoder config; unknown keys
-raise `ValueError`):
+`do_sample=True`, `temperature=0.2`, `top_k=0`, `top_p=0.9`). 
+
+Override them at load time with `generation_kwargs` (merged onto the decoder config; unknown keys raise `ValueError`):
 
 ```python
 # Faster / deterministic OCR on CPU (greedy decoding)
@@ -203,8 +220,9 @@ Bare `max_new_tokens=` remains supported as a shorthand:
 model = LightOnOCR.from_pretrained("...", max_new_tokens=1024)
 ```
 
-On CPU, prefer `do_sample=False` for throughput. If you need sampling, set a
-modest `top_k` (for example `50`) instead of leaving the HF default `top_k=0`.
+> On CPU, prefer `do_sample=False` for throughput.
+
+> If you need sampling, set a modest `top_k` (for example `50`) instead of leaving the HF default `top_k=0`.
 
 ---
 
@@ -235,31 +253,22 @@ export ORT_DYLIB_PATH="$(python -c \
 
 ### Building a wheel
 
-To build a distributable wheel, use the project's Python build backend:
+Same profiles as [Building from source](#building-from-source):
 
 ```bash
+# CPU (default)
 poetry run pip wheel . --wheel-dir dist
-```
 
-The default build profile targets CPU execution and does not enable any Cargo
-features. During source builds, the build backend automatically discovers a
-compatible ONNX Runtime from `ORT_DYLIB_PATH` or from the selected build
-profile's Python runtime package, validates compatibility with ONNX Runtime
-1.28.x (C API level 27), configures Cargo, and produces a wheel containing the
-required native runtime libraries.
-
-To build using the CUDA profile:
-
-```bash
+# CUDA
 BUILD_PROFILE=cuda poetry run pip wheel . --wheel-dir dist
 ```
 
 > **Note**
 >
 > Running `maturin develop` **without** `--features load-dynamic` is not
-> supported. The custom build backend is responsible for configuring ONNX
-> Runtime linking during production builds, whereas editable development uses
-> the `load-dynamic` feature together with `ORT_DYLIB_PATH`.
+> supported. Production/`pip install` builds use the custom build backend for
+> ONNX Runtime linking; editable development uses `load-dynamic` with
+> `ORT_DYLIB_PATH`.
 
 ---
 

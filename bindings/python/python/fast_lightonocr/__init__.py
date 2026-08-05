@@ -57,6 +57,53 @@ _ONNX_FILES = {
     ),
 }
 
+_CUDA_RUNTIME_PRELOADED = False
+
+
+def _runtime_requests_cuda(runtime_kwargs: Mapping[str, Any] | None) -> bool:
+    """Return True when runtime_kwargs selects the CUDA execution provider."""
+
+    if not runtime_kwargs:
+        return False
+
+    provider = runtime_kwargs.get("execution_provider")
+    if provider is None:
+        return False
+
+    return str(provider).lower() == "cuda"
+
+
+def _preload_cuda_runtime_libraries() -> None:
+    """Preload pip NVIDIA CUDA/cuDNN libs for the native CUDA EP.
+
+    Scoped to CUDA loads only. ONNX Runtime's ``preload_dlls`` brings the
+    ``nvidia-*`` wheel libraries into the process so Linux can resolve
+    ``libcublasLt`` / cuDNN without requiring ``LD_LIBRARY_PATH``.
+    """
+
+    global _CUDA_RUNTIME_PRELOADED
+    if _CUDA_RUNTIME_PRELOADED:
+        return
+
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise ImportError(
+            "CUDA execution_provider requires onnxruntime-gpu. "
+            "Install with: pip install 'fast-lightonocr[cuda]'"
+        ) from exc
+
+    preload = getattr(ort, "preload_dlls", None)
+    if preload is None:
+        raise RuntimeError(
+            "installed onnxruntime does not provide preload_dlls(); "
+            "fast-lightonocr CUDA support requires onnxruntime-gpu>=1.28"
+        )
+
+    # Bring pip nvidia-* CUDA/cuDNN libs into this process (CUDA path only).
+    preload(cuda=True, cudnn=True)
+    _CUDA_RUNTIME_PRELOADED = True
+
 
 def _download_patterns(preset: Preset) -> list[str]:
     """Return the Hugging Face download patterns for a model preset.
@@ -194,6 +241,10 @@ class LightOnOCR:
         model_path = Path(model_id_or_path)
         gen_kwargs = dict(generation_kwargs) if generation_kwargs is not None else None
         rt_kwargs = dict(runtime_kwargs) if runtime_kwargs is not None else None
+
+        # CPU loads never import onnxruntime or touch NVIDIA libs.
+        if _runtime_requests_cuda(rt_kwargs):
+            _preload_cuda_runtime_libraries()
 
         if model_path.exists():
             return cls(
