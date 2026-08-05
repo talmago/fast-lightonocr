@@ -114,6 +114,46 @@ impl EmbeddingModel {
             usize::try_from(shape[2]).expect("validated non-negative hidden size"),
         )
     }
+
+    /// Embeds token IDs into an existing [`InputEmbeddings`] buffer.
+    ///
+    /// Prefer this over [`Self::embed`] in the autoregressive loop so the
+    /// `(1, 1, hidden_size)` host buffer can reuse allocation capacity.
+    pub fn embed_into(&mut self, token_ids: &[i64], output: &mut InputEmbeddings) -> Result<()> {
+        validate_token_ids(token_ids, &self.config)?;
+
+        let input_shape = [1_i64, token_ids.len() as i64];
+        let input = TensorRef::from_array_view((input_shape, token_ids))
+            .map_err(|source| Error::EmbeddingTensorCreation { source })?;
+
+        let mut outputs = self
+            .session
+            .run(ort::inputs! { EMBEDDING_INPUT_NAME => input })
+            .map_err(|source| Error::EmbeddingInference { source })?;
+
+        let output_value =
+            outputs
+                .remove(EMBEDDING_OUTPUT_NAME)
+                .ok_or_else(|| Error::InvalidEmbeddingOutput {
+                    reason: format!("missing `{EMBEDDING_OUTPUT_NAME}` output"),
+                })?;
+
+        let (shape, data) = output_value.try_extract_tensor::<f32>().map_err(|source| {
+            Error::InvalidEmbeddingOutput {
+                reason: format!("failed to extract `{EMBEDDING_OUTPUT_NAME}` as float32: {source}"),
+            }
+        })?;
+
+        let shape = shape.as_ref();
+        validate_embedding_shape(shape, token_ids.len(), &self.config)?;
+
+        output.copy_from_slice(
+            data,
+            usize::try_from(shape[0]).expect("validated non-negative batch size"),
+            usize::try_from(shape[1]).expect("validated non-negative sequence length"),
+            usize::try_from(shape[2]).expect("validated non-negative hidden size"),
+        )
+    }
 }
 
 fn validate_session_contract(session: &Session, config: &EmbeddingConfig) -> Result<()> {

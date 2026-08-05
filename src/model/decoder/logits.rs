@@ -81,4 +81,9 @@ impl Logits {
         let offset = (batch * self.sequence_length + sequence) * self.vocab_size + token;
         self.data.get(offset).copied()
     }
+
+    /// Consumes the logits and returns the underlying buffer for reuse.
+    pub(crate) fn into_data(self) -> Vec<f32> {
+        self.data
+    }
 }
