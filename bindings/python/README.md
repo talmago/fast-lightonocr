@@ -52,8 +52,15 @@ model = LightOnOCR.from_pretrained(
 ```
 
 Default published wheels remain CPU-oriented; the CUDA extra is a dedicated
-build profile. On CUDA, decoder KV past/present stay on device during generate;
-token sampling still runs on the host.
+build profile. Only CUDA wheels inject ORT CUDA provider plugins
+(`libonnxruntime_providers_{shared,cuda}.so`) into the wheel; CPU packaging is
+unchanged. CUDA 13 / cuDNN / cublas user libraries come from the `cuda` extra
+(`onnxruntime-gpu[cuda,cudnn]` + `nvidia-cublas`) or a system CUDA stack —
+set `LD_LIBRARY_PATH` to the pip `nvidia/*/lib` dirs and the NVIDIA driver
+(`libcuda`) when needed (e.g. Colab).
+
+On CUDA, autoregressive decode uses host KV by default (graphs may still run
+on GPU via the CUDA EP). Token sampling always runs on the host.
 
 Prebuilt wheels are currently published for Linux x86_64 and macOS arm64. These
 wheels bundle the required ONNX Runtime shared library, so no additional runtime

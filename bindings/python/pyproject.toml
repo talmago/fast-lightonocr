@@ -42,7 +42,10 @@ cpu = [
     "onnxruntime>=1.28,<2",
 ]
 cuda = [
-    "onnxruntime-gpu>=1.28,<2",
+    "onnxruntime-gpu[cuda,cudnn]>=1.28,<2",
+    # ORT 1.28 CUDA EP needs CUDA 13 cublas; not included in the upstream
+    # onnxruntime-gpu[cuda] extra as of 1.28.0.
+    "nvidia-cublas~=13.0",
 ]
 
 [dependency-groups]
@@ -77,6 +80,8 @@ build-requirements = [
 [tool.fast-lightonocr.build-profiles.cuda]
 cargo-features = ["cuda"]
 build-requirements = [
+    # Build only needs the ORT dylib for linking; CUDA/cuDNN user libs are
+    # runtime deps via the `cuda` optional-extra.
     "onnxruntime-gpu>=1.28,<2",
 ]
 
