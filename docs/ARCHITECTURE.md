@@ -291,7 +291,7 @@ Sessions are configured through `RuntimeOptions`: execution provider, intra-op t
 
 The default execution provider is CPU. CUDA is available when the crate is built with `--features cuda` and a CUDA-enabled ONNX Runtime is present. Selecting CUDA without that feature fails at session creation with a clear error; with the feature enabled, CUDA EP registration fails hard if the provider cannot initialize (no silent CPU fallback).
 
-On the CUDA path, autoregressive decode keeps KV past/present tensors on device via ORT IoBinding. Token sampling still runs on the host from final-position logits. The host `KvCache` type and CPU decode path remain the default when CUDA is not selected; CUDA helpers are compile-gated behind the `cuda` feature so CPU builds are unchanged.
+On the CUDA path, autoregressive decode still uses the host `KvCache` and `Session::run` by default (graphs may run on GPU via the CUDA EP; KV traffic crosses the host). An experimental IoBinding device-KV path is available behind `FAST_LIGHTONOCR_CUDA_DEVICE_KV=1`; empty past tensors start on the host and present outputs are promoted to device after the first step. Token sampling always runs on the host from final-position logits. CUDA helpers are compile-gated behind the `cuda` feature so CPU builds are unchanged.
 
 The runtime provides lightweight, strongly typed wrappers around the exported ONNX models, exposing Rust domain types such as `ImageTensor`, `ImageFeatures`, `InputEmbeddings`, `AttentionMask`, `Logits`, and `KvCache` rather than raw ONNX tensors.
 
