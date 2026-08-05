@@ -78,8 +78,9 @@ Optimize inference without changing model outputs.
 - Reuse ONNX tensors
 - ✅ Reuse KV-cache buffers across decode steps (in-place present-tensor copy)
 - ✅ Optimize top-k / top-p sampling (select_nth + heap nucleus; avoid full-vocab sort)
+- ✅ CPU ORT session tuning (shared builder: intra/inter threads, graph opt, RuntimeOptions wiring)
 - Benchmark inference
-- ORT / execution-provider tuning
+- Non-CPU execution providers (CUDA / other EPs)
 
 ---
 

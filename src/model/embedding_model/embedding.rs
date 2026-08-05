@@ -6,6 +6,7 @@ use ort::session::Session;
 use ort::value::{TensorElementType, TensorRef, ValueType};
 
 use crate::model::InputEmbeddings;
+use crate::util::RuntimeOptions;
 use crate::{Error, Result};
 
 use super::EmbeddingConfig;
@@ -29,17 +30,24 @@ impl EmbeddingModel {
     /// Loads an embedding model from an explicit ONNX model path and config.
     ///
     /// This is useful for tests and tools that already resolved the model
-    /// asset path and parsed configuration.
+    /// asset path and parsed configuration. Uses default [`RuntimeOptions`].
     pub fn from_model_path(model_path: impl AsRef<Path>, config: EmbeddingConfig) -> Result<Self> {
+        Self::from_model_path_with_runtime(model_path, config, &RuntimeOptions::default())
+    }
+
+    /// Loads an embedding model with explicit runtime session options.
+    pub fn from_model_path_with_runtime(
+        model_path: impl AsRef<Path>,
+        config: EmbeddingConfig,
+        runtime: &RuntimeOptions,
+    ) -> Result<Self> {
         let model_path = model_path.as_ref().to_path_buf();
         if !model_path.is_file() {
             return Err(Error::MissingEmbeddingModel { path: model_path });
         }
 
-        crate::util::onnxruntime::ensure_compatible()?;
-
-        let session = Session::builder()
-            .and_then(|mut builder| builder.commit_from_file(&model_path))
+        let session = crate::util::onnxruntime::session_builder(runtime)?
+            .commit_from_file(&model_path)
             .map_err(|source| Error::EmbeddingModelLoad {
                 path: model_path.clone(),
                 source,

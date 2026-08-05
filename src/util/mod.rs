@@ -5,7 +5,7 @@ pub(crate) mod onnxruntime;
 
 use std::path::PathBuf;
 
-pub use onnxruntime::ExecutionProvider;
+pub use onnxruntime::{ExecutionProvider, RuntimeOptions};
 
 /// Crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;

@@ -94,7 +94,9 @@ Available model presets:
 - `LightOnOCROptions::q4()`
 
 `LightOnOCROptions::max_new_tokens` can be used to override the value loaded
-from `generation_config.json`.
+from `generation_config.json`. CPU session tuning (intra/inter-op threads,
+parallel execution) is configured via `RuntimeOptions` on
+`LightOnOCROptions::runtime`.
 
 ### Python
 
@@ -228,6 +230,15 @@ If using the runtime-loading feature:
 cargo run --features load-dynamic --example inference
 cargo run --features load-dynamic --example streaming
 ```
+
+CPU ORT session options (`intra_threads`, `inter_threads`, parallel execution) are configured through `RuntimeOptions` on `LightOnOCROptions`. Defaults use host parallelism for intra-op threads. To compare thread settings on your machine:
+
+```bash
+cargo run --release --features load-dynamic --example cpu_ort_bench -- \
+  models/lightonocr q4
+```
+
+When ONNX Runtime is built with OpenMP, prefer `OMP_NUM_THREADS` over `intra_threads`.
 
 ### Python Bindings
 

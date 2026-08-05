@@ -42,6 +42,10 @@ required-features = ["load-dynamic"]
 name = "streaming"
 required-features = ["load-dynamic"]
 
+[[example]]
+name = "cpu_ort_bench"
+required-features = ["load-dynamic"]
+
 [features]
 default = []
 
