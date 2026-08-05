@@ -1,10 +1,13 @@
-//! ONNX Runtime compatibility validation.
+//! ONNX Runtime compatibility validation and session configuration.
 
 #[cfg(feature = "load-dynamic")]
 use std::ffi::c_void;
 use std::ffi::{CStr, c_char};
 #[cfg(feature = "load-dynamic")]
 use std::path::PathBuf;
+
+use ort::session::Session;
+use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 
 use crate::{Error, Result};
 
@@ -20,15 +23,148 @@ pub enum ExecutionProvider {
     Cpu,
 
     /// CUDA execution provider.
+    ///
+    /// Reserved for a future milestone. Selecting this provider currently
+    /// returns an error at session creation time.
     Cuda {
         /// CUDA device index.
         device_id: usize,
     },
 }
 
+/// Runtime configuration applied when creating ONNX Runtime sessions.
+///
+/// The three LightOnOCR sessions (vision, embedding, decoder) run
+/// sequentially for a single OCR request, so each session may use the full
+/// `intra_threads` budget without oversubscribing during one request.
+///
+/// Note: Microsoft's prebuilt ONNX Runtime binaries are often built with
+/// OpenMP. In that case `intra_threads` has no effect and thread count is
+/// controlled by `OMP_NUM_THREADS` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeOptions {
+    /// ONNX Runtime execution provider.
+    pub execution_provider: ExecutionProvider,
+
+    /// Intra-op thread count used to parallelize work within graph nodes.
+    ///
+    /// When `None`, defaults to the host's available parallelism.
+    pub intra_threads: Option<usize>,
+
+    /// Inter-op thread count used when parallel execution mode is enabled.
+    ///
+    /// When `None`, defaults to `1`. Has no effect while
+    /// [`Self::parallel_execution`] is `false`.
+    pub inter_threads: Option<usize>,
+
+    /// Enable ORT parallel execution mode across independent graph nodes.
+    ///
+    /// Defaults to `false` (sequential execution mode).
+    pub parallel_execution: bool,
+}
+
+impl Default for RuntimeOptions {
+    fn default() -> Self {
+        Self {
+            execution_provider: ExecutionProvider::Cpu,
+            intra_threads: None,
+            inter_threads: None,
+            parallel_execution: false,
+        }
+    }
+}
+
+impl RuntimeOptions {
+    /// Returns a copy with the given execution provider.
+    #[must_use]
+    pub fn with_execution_provider(mut self, execution_provider: ExecutionProvider) -> Self {
+        self.execution_provider = execution_provider;
+        self
+    }
+
+    /// Returns a copy with an explicit intra-op thread count.
+    #[must_use]
+    pub fn with_intra_threads(mut self, intra_threads: usize) -> Self {
+        self.intra_threads = Some(intra_threads);
+        self
+    }
+
+    /// Returns a copy with an explicit inter-op thread count.
+    #[must_use]
+    pub fn with_inter_threads(mut self, inter_threads: usize) -> Self {
+        self.inter_threads = Some(inter_threads);
+        self
+    }
+
+    /// Returns a copy with parallel execution mode enabled or disabled.
+    #[must_use]
+    pub fn with_parallel_execution(mut self, parallel_execution: bool) -> Self {
+        self.parallel_execution = parallel_execution;
+        self
+    }
+
+    fn resolved_intra_threads(self) -> usize {
+        self.intra_threads.unwrap_or_else(default_intra_threads)
+    }
+
+    fn resolved_inter_threads(self) -> usize {
+        self.inter_threads.unwrap_or(1)
+    }
+}
+
+fn default_intra_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
 /// Ensures the configured ONNX Runtime is compatible with this crate.
 pub(crate) fn ensure_compatible() -> Result<()> {
     runtime_details().and_then(|details| validate_runtime(&details))
+}
+
+/// Builds a session builder configured from [`RuntimeOptions`].
+///
+/// Callers should finish with [`SessionBuilder::commit_from_file`] and map
+/// load failures to model-specific errors.
+pub(crate) fn session_builder(options: &RuntimeOptions) -> Result<SessionBuilder> {
+    ensure_compatible()?;
+    validate_execution_provider(options.execution_provider)?;
+
+    let intra_threads = options.resolved_intra_threads();
+    let inter_threads = options.resolved_inter_threads();
+
+    let builder = Session::builder().map_err(session_config_error)?;
+    let builder = builder
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(session_config_error)?;
+    let builder = builder
+        .with_intra_threads(intra_threads)
+        .map_err(session_config_error)?;
+    let builder = builder
+        .with_inter_threads(inter_threads)
+        .map_err(session_config_error)?;
+    builder
+        .with_parallel_execution(options.parallel_execution)
+        .map_err(session_config_error)
+}
+
+fn session_config_error<T>(source: ort::Error<T>) -> Error {
+    Error::OnnxRuntimeCompatibility {
+        reason: format!("failed to configure ONNX Runtime session: {source}"),
+    }
+}
+
+fn validate_execution_provider(execution_provider: ExecutionProvider) -> Result<()> {
+    match execution_provider {
+        ExecutionProvider::Cpu => Ok(()),
+        ExecutionProvider::Cuda { device_id } => Err(Error::OnnxRuntimeCompatibility {
+            reason: format!(
+                "CUDA execution provider (device_id={device_id}) is not wired yet; \
+                 use ExecutionProvider::Cpu"
+            ),
+        }),
+    }
 }
 
 #[derive(Debug)]
@@ -186,4 +322,34 @@ fn parse_version_part(version: &str, part: Option<&str>, name: &str) -> Result<u
         .ok_or_else(|| Error::OnnxRuntimeCompatibility {
             reason: format!("could not parse ONNX Runtime {name} version from {version:?}"),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unwired_cuda_execution_provider() {
+        let options = RuntimeOptions::default()
+            .with_execution_provider(ExecutionProvider::Cuda { device_id: 0 });
+
+        let error = validate_execution_provider(options.execution_provider)
+            .expect_err("CUDA EP should be rejected until wired");
+
+        match error {
+            Error::OnnxRuntimeCompatibility { reason } => {
+                assert!(reason.contains("CUDA"));
+                assert!(reason.contains("not wired"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn resolves_default_thread_counts() {
+        let options = RuntimeOptions::default();
+        assert!(options.resolved_intra_threads() >= 1);
+        assert_eq!(options.resolved_inter_threads(), 1);
+        assert!(!options.parallel_execution);
+    }
 }

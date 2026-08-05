@@ -7,6 +7,7 @@ use ort::value::{Outlet, TensorElementType, TensorRef, ValueType};
 
 use crate::model::InputEmbeddings;
 use crate::model::embedding_model::EmbeddingModel;
+use crate::util::RuntimeOptions;
 use crate::{Error, Result};
 
 use super::attention::AttentionMask;
@@ -45,8 +46,17 @@ impl Decoder {
     ///
     /// The decoder configuration (`config.json`) and generation configuration
     /// (`generation_config.json`) are loaded automatically from either the
-    /// ONNX model directory or its parent model directory.
+    /// ONNX model directory or its parent model directory. Uses default
+    /// [`RuntimeOptions`].
     pub fn from_model_path(model_path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_model_path_with_runtime(model_path, &RuntimeOptions::default())
+    }
+
+    /// Loads a decoder with explicit runtime session options.
+    pub fn from_model_path_with_runtime(
+        model_path: impl AsRef<Path>,
+        runtime: &RuntimeOptions,
+    ) -> Result<Self> {
         let model_path = model_path.as_ref().to_path_buf();
 
         if !model_path.is_file() {
@@ -60,10 +70,8 @@ impl Decoder {
         let generation_config =
             GenerationConfig::from_file(config_dir.join(GENERATION_CONFIG_FILE))?;
 
-        crate::util::onnxruntime::ensure_compatible()?;
-
-        let session = Session::builder()
-            .and_then(|mut builder| builder.commit_from_file(&model_path))
+        let session = crate::util::onnxruntime::session_builder(runtime)?
+            .commit_from_file(&model_path)
             .map_err(|source| Error::DecoderModelLoad {
                 path: model_path.clone(),
                 source,

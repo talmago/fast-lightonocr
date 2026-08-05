@@ -11,15 +11,8 @@ use super::{
 
 use crate::model::{AttentionMask, ImageFeatures, InputEmbeddings};
 use crate::processor::{Message, MessageContent, MessageRole};
-use crate::util::ExecutionProvider;
+use crate::util::RuntimeOptions;
 use crate::{Error, Processor, Result};
-
-/// Runtime configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RuntimeOptions {
-    /// ONNX Runtime execution provider.
-    pub execution_provider: ExecutionProvider,
-}
 
 /// Options used when loading a pretrained LightOnOCR model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +77,12 @@ impl LightOnOCROptions {
             max_new_tokens: Some(max_new_tokens),
             ..self
         }
+    }
+
+    /// Returns a copy of these options with custom runtime configuration.
+    #[must_use]
+    pub fn with_runtime(self, runtime: RuntimeOptions) -> Self {
+        Self { runtime, ..self }
     }
 }
 
@@ -160,17 +159,22 @@ impl LightOnOCR {
 
         let config_path = model_dir.join("config.json");
 
-        let vision_encoder = VisionEncoder::from_model_path(
+        let vision_encoder = VisionEncoder::from_model_path_with_runtime(
             model_dir.join(&options.vision_encoder),
             VisionConfig::from_file(&config_path)?,
+            &options.runtime,
         )?;
 
-        let embedding_model = EmbeddingModel::from_model_path(
+        let embedding_model = EmbeddingModel::from_model_path_with_runtime(
             model_dir.join(&options.embedding),
             EmbeddingConfig::from_file(&config_path)?,
+            &options.runtime,
         )?;
 
-        let mut decoder = Decoder::from_model_path(model_dir.join(&options.decoder))?;
+        let mut decoder = Decoder::from_model_path_with_runtime(
+            model_dir.join(&options.decoder),
+            &options.runtime,
+        )?;
 
         if let Some(max_new_tokens) = options.max_new_tokens {
             decoder.generation_config_mut().max_new_tokens = max_new_tokens;

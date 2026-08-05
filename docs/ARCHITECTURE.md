@@ -282,6 +282,10 @@ The inference engine owns one ONNX Runtime session for each exported model:
 
 Sessions are created during model initialization and reused for the lifetime of the inference engine.
 
+CPU sessions are configured through `RuntimeOptions`: intra-op thread count (defaulting to host parallelism), optional inter-op threads, and sequential vs parallel execution mode. Graph optimization level 3 is applied explicitly. Because vision, embedding, and decoder run one after another for a single OCR request, each session may use the full intra-op thread budget. When ONNX Runtime is built with OpenMP, prefer `OMP_NUM_THREADS` over `intra_threads`.
+
+CUDA execution provider selection is reserved but not wired yet; selecting it fails at session creation with a clear error.
+
 The runtime provides lightweight, strongly typed wrappers around the exported ONNX models, exposing Rust domain types such as `ImageTensor`, `ImageFeatures`, `InputEmbeddings`, `AttentionMask`, `Logits`, and `KvCache` rather than raw ONNX tensors.
 
 Runtime behavior—including model selection, execution providers, and session configuration—is encapsulated behind the inference engine, allowing higher-level components to remain independent of ONNX Runtime implementation details.
