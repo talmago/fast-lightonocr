@@ -25,6 +25,15 @@ const DECODER_LOGITS_NAME: &str = "logits";
 const CONFIG_FILE: &str = "config.json";
 const GENERATION_CONFIG_FILE: &str = "generation_config.json";
 
+/// Which logits positions to materialize on the host after a decoder step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogitsSelection {
+    /// Copy the full `(batch, sequence, vocab)` logits tensor.
+    Full,
+    /// Copy only the final sequence position (shape becomes `(batch, 1, vocab)`).
+    FinalPosition,
+}
+
 /// ONNX Runtime wrapper for the exported LightOnOCR decoder.
 ///
 /// `Decoder` owns the decoder model together with the runtime state required
@@ -38,6 +47,10 @@ pub struct Decoder {
     generation_config: GenerationConfig,
     model_path: PathBuf,
     has_cache_branch: bool,
+    present_key_names: Vec<String>,
+    present_value_names: Vec<String>,
+    /// Reused host buffer for final-position logits during generation.
+    logits_scratch: Vec<f32>,
     rng: fastrand::Rng,
 }
 
@@ -78,6 +91,12 @@ impl Decoder {
             })?;
 
         let has_cache_branch = validate_session_contract(&session, &config)?;
+        let present_key_names = (0..config.num_hidden_layers)
+            .map(present_key_name)
+            .collect();
+        let present_value_names = (0..config.num_hidden_layers)
+            .map(present_value_name)
+            .collect();
 
         Ok(Self {
             session,
@@ -85,6 +104,9 @@ impl Decoder {
             generation_config,
             model_path,
             has_cache_branch,
+            present_key_names,
+            present_value_names,
+            logits_scratch: Vec::new(),
             rng: fastrand::Rng::new(),
         })
     }
@@ -147,13 +169,28 @@ impl Decoder {
         let mut kv_cache = self.empty_kv_cache(decoder_input.batch_size())?;
         attention_mask.reserve(self.generation_config.max_new_tokens);
 
+        let hidden_size = decoder_input.hidden_size();
+        let mut step_input = InputEmbeddings::new(vec![0.0; hidden_size], 1, 1, hidden_size)?;
+        let mut using_step_input = false;
+
         let mut finish_reason = FinishReason::Length;
 
         for step in 0..self.generation_config.max_new_tokens {
-            let logits = self.decode_step(&decoder_input, &attention_mask, &mut kv_cache)?;
+            let input = if using_step_input {
+                &step_input
+            } else {
+                &decoder_input
+            };
+            let logits = self.decode_step(
+                input,
+                &attention_mask,
+                &mut kv_cache,
+                LogitsSelection::FinalPosition,
+            )?;
 
             let next_token =
                 generation::next_token(&self.generation_config, &logits, &mut self.rng)?;
+            self.logits_scratch = logits.into_data();
 
             generated.push(next_token);
             on_token(next_token);
@@ -167,8 +204,11 @@ impl Decoder {
                 break;
             }
 
-            decoder_input = embedding_model.embed(&[next_token])?;
+            embedding_model.embed_into(&[next_token], &mut step_input)?;
+            using_step_input = true;
+            // Prefill embeddings are no longer needed after the first step.
             if step == 0 {
+                decoder_input = InputEmbeddings::default();
                 attention_mask.fill_visible();
             }
             attention_mask.push_visible();
@@ -191,7 +231,12 @@ impl Decoder {
         kv_cache: &KvCache,
     ) -> Result<DecoderOutput> {
         let mut cache = kv_cache.clone();
-        let logits = self.decode_step(input_embeddings, attention_mask, &mut cache)?;
+        let logits = self.decode_step(
+            input_embeddings,
+            attention_mask,
+            &mut cache,
+            LogitsSelection::Full,
+        )?;
         Ok(DecoderOutput::new(logits, cache))
     }
 
@@ -204,6 +249,7 @@ impl Decoder {
         input_embeddings: &InputEmbeddings,
         attention_mask: &AttentionMask,
         kv_cache: &mut KvCache,
+        logits_selection: LogitsSelection,
     ) -> Result<Logits> {
         let total_sequence_length =
             validate_decoder_inputs(input_embeddings, attention_mask, kv_cache, &self.config)?;
@@ -279,12 +325,22 @@ impl Decoder {
             sequence_length,
             self.config.vocab_size,
         )?;
-        let logits = Logits::new(
-            logits_data.to_vec(),
-            usize::try_from(logits_shape[0]).expect("validated non-negative batch size"),
-            usize::try_from(logits_shape[1]).expect("validated non-negative sequence length"),
-            usize::try_from(logits_shape[2]).expect("validated non-negative vocabulary size"),
-        )?;
+
+        let logits = match logits_selection {
+            LogitsSelection::Full => Logits::new(
+                logits_data.to_vec(),
+                usize::try_from(logits_shape[0]).expect("validated non-negative batch size"),
+                usize::try_from(logits_shape[1]).expect("validated non-negative sequence length"),
+                usize::try_from(logits_shape[2]).expect("validated non-negative vocabulary size"),
+            )?,
+            LogitsSelection::FinalPosition => materialize_final_position_logits(
+                logits_data,
+                batch_size,
+                sequence_length,
+                self.config.vocab_size,
+                &mut self.logits_scratch,
+            )?,
+        };
 
         update_cache_from_outputs(
             &mut outputs,
@@ -292,6 +348,8 @@ impl Decoder {
             batch_size,
             total_sequence_length,
             &self.config,
+            &self.present_key_names,
+            &self.present_value_names,
         )?;
 
         Ok(logits)
@@ -646,33 +704,35 @@ fn update_cache_from_outputs(
     batch_size: usize,
     total_sequence_length: usize,
     config: &DecoderConfig,
+    present_key_names: &[String],
+    present_value_names: &[String],
 ) -> Result<()> {
     for layer_index in 0..config.num_hidden_layers {
-        let key_name = present_key_name(layer_index);
-        let key_output = outputs
-            .remove(&key_name)
-            .ok_or_else(|| Error::InvalidDecoderOutput {
-                reason: format!("missing `{key_name}` output"),
-            })?;
+        let key_name = &present_key_names[layer_index];
+        let key_output =
+            outputs
+                .remove(key_name.as_str())
+                .ok_or_else(|| Error::InvalidDecoderOutput {
+                    reason: format!("missing `{key_name}` output"),
+                })?;
         let (key_shape, key_present) =
             key_output.try_extract_tensor::<f32>().map_err(|source| {
                 Error::InvalidDecoderOutput {
                     reason: format!("failed to extract `{key_name}` as float32: {source}"),
                 }
             })?;
-        let key_shape = key_shape.as_ref().to_vec();
         validate_cache_output_shape(
-            &key_shape,
-            &key_name,
+            key_shape.as_ref(),
+            key_name,
             batch_size,
             total_sequence_length,
             config,
         )?;
 
-        let value_name = present_value_name(layer_index);
+        let value_name = &present_value_names[layer_index];
         let value_output =
             outputs
-                .remove(&value_name)
+                .remove(value_name.as_str())
                 .ok_or_else(|| Error::InvalidDecoderOutput {
                     reason: format!("missing `{value_name}` output"),
                 })?;
@@ -682,10 +742,9 @@ fn update_cache_from_outputs(
                     reason: format!("failed to extract `{value_name}` as float32: {source}"),
                 }
             })?;
-        let value_shape = value_shape.as_ref().to_vec();
         validate_cache_output_shape(
-            &value_shape,
-            &value_name,
+            value_shape.as_ref(),
+            value_name,
             batch_size,
             total_sequence_length,
             config,
@@ -698,6 +757,40 @@ fn update_cache_from_outputs(
 
     kv_cache.set_past_sequence_length(total_sequence_length);
     Ok(())
+}
+
+/// Copies only the last sequence position into a reusable host buffer.
+fn materialize_final_position_logits(
+    logits_data: &[f32],
+    batch_size: usize,
+    sequence_length: usize,
+    vocab_size: usize,
+    scratch: &mut Vec<f32>,
+) -> Result<Logits> {
+    if batch_size != 1 {
+        return Err(Error::Inference {
+            reason: format!("only batch size 1 is supported, found {batch_size}"),
+        });
+    }
+    if sequence_length == 0 {
+        return Err(Error::InvalidDecoderOutput {
+            reason: "logits sequence length must be greater than zero".to_owned(),
+        });
+    }
+
+    let start = (sequence_length - 1) * vocab_size;
+    let end = start + vocab_size;
+    let final_position =
+        logits_data
+            .get(start..end)
+            .ok_or_else(|| Error::InvalidDecoderOutput {
+                reason: "logits tensor is shorter than the validated shape".to_owned(),
+            })?;
+
+    let mut data = std::mem::take(scratch);
+    data.clear();
+    data.extend_from_slice(final_position);
+    Logits::new(data, batch_size, 1, vocab_size)
 }
 
 /// Copies `src` into `dst`, reusing `dst`'s existing allocation capacity.

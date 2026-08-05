@@ -46,6 +46,10 @@ required-features = ["load-dynamic"]
 name = "cpu_ort_bench"
 required-features = ["load-dynamic"]
 
+[[example]]
+name = "inference_bench"
+required-features = ["load-dynamic"]
+
 [features]
 default = []
 

@@ -79,12 +79,11 @@ Optimize inference without changing model outputs.
 - ✅ Reuse KV-cache buffers across decode steps (in-place present-tensor copy)
 - ✅ Optimize top-k / top-p sampling (select_nth + heap nucleus; avoid full-vocab sort)
 - ✅ CPU ORT session tuning (shared builder: intra/inter threads, graph opt, `RuntimeOptions` wiring)
+- ✅ Reduce remaining host allocations where measured (final-position logits copy; reusable logits scratch; drop per-step present-name / shape `Vec` allocs)
+- ✅ Reuse ONNX input tensors across decode steps where practical (`embed_into` for `(1,1,H)` step embeds; cached present KV names; prefill buffer released after first step)
+- ✅ Broader inference benchmarks (latency / tokens-per-second across presets via `examples/inference_bench.rs`)
 
-### Planned work
-
-- Reduce remaining host allocations where measured
-- Reuse ONNX input tensors across decode steps where practical
-- Broader inference benchmarks (latency / tokens-per-second across presets)
+Session input `TensorRef` wrappers are still rebuilt each step (lifetime-bound to the ORT run); measured cost is dominated by ORT execution and the KV present→past memcpy, which already reuses buffer capacity.
 
 ---
 

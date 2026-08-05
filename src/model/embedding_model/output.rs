@@ -83,4 +83,39 @@ impl InputEmbeddings {
         let offset = (batch * self.sequence_length + sequence) * self.hidden_size + hidden;
         self.data.get(offset).copied()
     }
+
+    /// Overwrites this tensor in place from contiguous embedding data.
+    ///
+    /// Reuses the existing allocation when the new shape fits in the current
+    /// capacity; otherwise the buffer grows as needed.
+    pub fn copy_from_slice(
+        &mut self,
+        data: &[f32],
+        batch_size: usize,
+        sequence_length: usize,
+        hidden_size: usize,
+    ) -> crate::Result<()> {
+        let expected = batch_size
+            .checked_mul(sequence_length)
+            .and_then(|value| value.checked_mul(hidden_size))
+            .ok_or_else(|| crate::Error::InvalidEmbeddingOutput {
+                reason: "input embedding shape is too large".to_owned(),
+            })?;
+        if data.len() != expected {
+            return Err(crate::Error::InvalidEmbeddingOutput {
+                reason: format!(
+                    "input embedding data length {} does not match shape {:?}",
+                    data.len(),
+                    (batch_size, sequence_length, hidden_size)
+                ),
+            });
+        }
+
+        self.data.clear();
+        self.data.extend_from_slice(data);
+        self.batch_size = batch_size;
+        self.sequence_length = sequence_length;
+        self.hidden_size = hidden_size;
+        Ok(())
+    }
 }

@@ -263,6 +263,11 @@ During autoregressive generation the decoder keeps one `KvCache` and overwrites
 each layer's key/value buffers in place after every step, reusing allocation
 capacity instead of allocating a fresh cache from the full `present.*` outputs.
 
+The generation loop also reuses a single-token `InputEmbeddings` buffer via
+`EmbeddingModel::embed_into`, copies only the final logits position into a
+scratch buffer for token selection, and caches `present.*` output names at load
+time. Public `Decoder::decode()` still returns full-sequence logits.
+
 `Decoder::generate()` receives the merged initial `InputEmbeddings`, the
 initial `AttentionMask`, and the embedding model used to embed each generated
 next token. It returns generated token IDs and a finish reason indicating

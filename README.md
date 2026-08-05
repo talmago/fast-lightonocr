@@ -238,6 +238,15 @@ cargo run --release --features load-dynamic --example cpu_ort_bench -- \
   models/lightonocr q4
 ```
 
+For end-to-end latency and tokens/sec across presets (`q4` / `default` / `fp16`), generation lengths, and greedy vs sample:
+
+```bash
+cargo run --release --features load-dynamic --example inference_bench -- \
+  models/lightonocr examples/SROIE-receipt.jpeg
+```
+
+Optional third argument selects presets (comma-separated), e.g. `q4` or `q4,default`.
+
 When ONNX Runtime is built with OpenMP, prefer `OMP_NUM_THREADS` over `intra_threads`.
 
 ### Python Bindings
@@ -273,7 +282,7 @@ The Python bindings use the same native library and build infrastructure.
 - ✅ FP16 and Q4 model presets
 - ✅ Python bindings and packaging (wheels, release workflow)
 - ✅ Native CLI-style examples (`inference`, `streaming`)
-- ✅ CPU performance work (KV-cache reuse, top-k/top-p, ORT session tuning)
+- ✅ CPU performance work (KV-cache reuse, top-k/top-p, ORT session tuning, decode host reuse, inference bench)
 - 🚧 Generation parity and deterministic seeded generation
 - 🚧 Broader processor parity coverage
 - 🚧 Non-CPU execution providers (CUDA, CoreML, DirectML)
