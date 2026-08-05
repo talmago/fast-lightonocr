@@ -144,14 +144,54 @@ Available presets:
 - `fp16`
 - `q4`
 
-The generation length can be overridden:
+### Generation overrides
+
+Model defaults come from Hugging Face `generation_config.json` (typically
+`do_sample=True`, `temperature=0.2`, `top_k=0`, `top_p=0.9`). Override them at
+load time with `generation_kwargs` (merged onto the decoder config; unknown keys
+raise `ValueError`):
 
 ```python
+# Faster / deterministic OCR on CPU (greedy decoding)
+model = LightOnOCR.from_pretrained(
+    "onnx-community/LightOnOCR-2-1B-ONNX",
+    preset="q4",
+    generation_kwargs={
+        "do_sample": False,
+        "max_new_tokens": 256,
+    },
+)
+
+# Sampling with a top-k cutoff (HF default top_k=0 walks the full vocab)
 model = LightOnOCR.from_pretrained(
     "...",
-    max_new_tokens=1024,
+    generation_kwargs={
+        "do_sample": True,
+        "temperature": 0.2,
+        "top_k": 50,
+        "top_p": 0.9,
+        "max_new_tokens": 256,
+    },
 )
 ```
+
+Supported keys: `max_new_tokens`, `do_sample`, `temperature`, `top_k`, `top_p`.
+
+You can also update knobs after load:
+
+```python
+model.generation_kwargs = {"do_sample": False}
+print(model.generation_kwargs)
+```
+
+Bare `max_new_tokens=` remains supported as a shorthand:
+
+```python
+model = LightOnOCR.from_pretrained("...", max_new_tokens=1024)
+```
+
+On CPU, prefer `do_sample=False` for throughput. If you need sampling, set a
+modest `top_k` (for example `50`) instead of leaving the HF default `top_k=0`.
 
 ---
 
