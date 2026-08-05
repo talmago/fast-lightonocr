@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use fast_lightonocr::{
-    FinishReason, GenerationConfig, LightOnOCR as NativeLightOnOCR, LightOnOCROptions,
-    OCRResult as NativeOCRResult,
+    ExecutionProvider, FinishReason, GenerationConfig, LightOnOCR as NativeLightOnOCR,
+    LightOnOCROptions, OCRResult as NativeOCRResult, RuntimeOptions,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -87,6 +87,7 @@ impl PyLightOnOCR {
         *,
         preset = "default",
         generation_kwargs = None,
+        runtime_kwargs = None,
         max_new_tokens = None,
         vision_encoder = None,
         embedding = None,
@@ -98,14 +99,17 @@ impl PyLightOnOCR {
         model_dir: PathBuf,
         preset: &str,
         generation_kwargs: Option<&Bound<'_, PyDict>>,
+        runtime_kwargs: Option<&Bound<'_, PyDict>>,
         max_new_tokens: Option<usize>,
         vision_encoder: Option<PathBuf>,
         embedding: Option<PathBuf>,
         decoder: Option<PathBuf>,
     ) -> PyResult<Self> {
+        // Runtime options must be applied before load (sessions are created then).
         // Generation overrides are applied onto GenerationConfig after load so
         // LightOnOCROptions does not grow a parallel override type.
-        let options = options_from_args(preset, vision_encoder, embedding, decoder)?;
+        let mut options = options_from_args(preset, vision_encoder, embedding, decoder)?;
+        options.runtime = apply_runtime_kwargs(options.runtime, runtime_kwargs)?;
         let mut model = py.allow_threads(|| {
             NativeLightOnOCR::from_pretrained(&model_dir, options).map_err(to_py_err)
         })?;
@@ -137,6 +141,15 @@ impl PyLightOnOCR {
             PyRuntimeError::new_err("LightOnOCR instance is unavailable after a panic")
         })?;
         apply_generation_kwargs(model.generation_config_mut(), Some(kwargs), None)
+    }
+
+    /// Runtime options used when the model sessions were created (read-only).
+    #[getter]
+    fn runtime_kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let model = self.inner.lock().map_err(|_| {
+            PyRuntimeError::new_err("LightOnOCR instance is unavailable after a panic")
+        })?;
+        runtime_options_to_dict(py, model.runtime())
     }
 
     /// Loads and processes an image from disk.
@@ -192,6 +205,101 @@ fn options_from_args(
     Ok(options)
 }
 
+/// Applies runtime overrides onto [`RuntimeOptions`] before model load.
+fn apply_runtime_kwargs(
+    mut options: RuntimeOptions,
+    runtime_kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<RuntimeOptions> {
+    let Some(kwargs) = runtime_kwargs else {
+        return Ok(options);
+    };
+
+    let mut device_id = match options.execution_provider {
+        ExecutionProvider::Cuda { device_id } => device_id,
+        ExecutionProvider::Cpu => 0,
+    };
+    let mut provider = match options.execution_provider {
+        ExecutionProvider::Cpu => "cpu",
+        ExecutionProvider::Cuda { .. } => "cuda",
+    }
+    .to_owned();
+
+    for (key, value) in kwargs.iter() {
+        let key = key.extract::<String>()?;
+        match key.as_str() {
+            "execution_provider" => {
+                provider = value.extract::<String>().map_err(|_| {
+                    PyValueError::new_err(
+                        "runtime_kwargs['execution_provider'] must be a string ('cpu' or 'cuda')",
+                    )
+                })?;
+            }
+            "device_id" => {
+                device_id = extract_usize(&value, "runtime_kwargs", "device_id")?;
+            }
+            "intra_threads" => {
+                options.intra_threads =
+                    Some(extract_usize(&value, "runtime_kwargs", "intra_threads")?);
+            }
+            "inter_threads" => {
+                options.inter_threads =
+                    Some(extract_usize(&value, "runtime_kwargs", "inter_threads")?);
+            }
+            "parallel_execution" => {
+                options.parallel_execution = value.extract::<bool>().map_err(|_| {
+                    PyValueError::new_err("runtime_kwargs['parallel_execution'] must be a bool")
+                })?;
+            }
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported runtime_kwargs key {other:?}; expected one of: \
+                     execution_provider, device_id, intra_threads, inter_threads, \
+                     parallel_execution"
+                )));
+            }
+        }
+    }
+
+    options.execution_provider = match provider.as_str() {
+        "cpu" => ExecutionProvider::Cpu,
+        "cuda" => ExecutionProvider::Cuda { device_id },
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unsupported execution_provider {other:?}; expected 'cpu' or 'cuda'"
+            )));
+        }
+    };
+
+    Ok(options)
+}
+
+fn runtime_options_to_dict<'py>(
+    py: Python<'py>,
+    options: RuntimeOptions,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    match options.execution_provider {
+        ExecutionProvider::Cpu => {
+            dict.set_item("execution_provider", "cpu")?;
+            dict.set_item("device_id", 0)?;
+        }
+        ExecutionProvider::Cuda { device_id } => {
+            dict.set_item("execution_provider", "cuda")?;
+            dict.set_item("device_id", device_id)?;
+        }
+    }
+    match options.intra_threads {
+        Some(value) => dict.set_item("intra_threads", value)?,
+        None => dict.set_item("intra_threads", py.None())?,
+    }
+    match options.inter_threads {
+        Some(value) => dict.set_item("inter_threads", value)?,
+        None => dict.set_item("inter_threads", py.None())?,
+    }
+    dict.set_item("parallel_execution", options.parallel_execution)?;
+    Ok(dict)
+}
+
 /// Applies generation overrides onto an existing [`GenerationConfig`].
 ///
 /// Keys present in `generation_kwargs` win over the bare `max_new_tokens`
@@ -208,7 +316,8 @@ fn apply_generation_kwargs(
             let key = key.extract::<String>()?;
             match key.as_str() {
                 "max_new_tokens" => {
-                    config.max_new_tokens = extract_usize(&value, "max_new_tokens")?;
+                    config.max_new_tokens =
+                        extract_usize(&value, "generation_kwargs", "max_new_tokens")?;
                     applied_max_new_tokens = true;
                 }
                 "do_sample" => {
@@ -222,7 +331,7 @@ fn apply_generation_kwargs(
                     })?;
                 }
                 "top_k" => {
-                    config.top_k = extract_u32(&value, "top_k")?;
+                    config.top_k = extract_u32(&value, "generation_kwargs", "top_k")?;
                 }
                 "top_p" => {
                     config.top_p = value.extract::<f32>().map_err(|_| {
@@ -259,19 +368,15 @@ fn generation_config_to_dict<'py>(
     Ok(dict)
 }
 
-fn extract_usize(value: &Bound<'_, PyAny>, key: &str) -> PyResult<usize> {
+fn extract_usize(value: &Bound<'_, PyAny>, kwargs_name: &str, key: &str) -> PyResult<usize> {
     value.extract::<usize>().map_err(|_| {
-        PyValueError::new_err(format!(
-            "generation_kwargs['{key}'] must be a non-negative int"
-        ))
+        PyValueError::new_err(format!("{kwargs_name}['{key}'] must be a non-negative int"))
     })
 }
 
-fn extract_u32(value: &Bound<'_, PyAny>, key: &str) -> PyResult<u32> {
+fn extract_u32(value: &Bound<'_, PyAny>, kwargs_name: &str, key: &str) -> PyResult<u32> {
     value.extract::<u32>().map_err(|_| {
-        PyValueError::new_err(format!(
-            "generation_kwargs['{key}'] must be a non-negative int"
-        ))
+        PyValueError::new_err(format!("{kwargs_name}['{key}'] must be a non-negative int"))
     })
 }
 

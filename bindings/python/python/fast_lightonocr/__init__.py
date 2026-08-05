@@ -144,6 +144,7 @@ class LightOnOCR:
         *,
         preset: Preset = "default",
         generation_kwargs: Mapping[str, Any] | None = None,
+        runtime_kwargs: Mapping[str, Any] | None = None,
         max_new_tokens: int | None = None,
     ) -> LightOnOCR:
         """Load a pretrained LightOnOCR model.
@@ -175,6 +176,12 @@ class LightOnOCR:
                 after load. Supported keys: ``max_new_tokens``, ``do_sample``,
                 ``temperature``, ``top_k``, ``top_p``.
 
+            runtime_kwargs:
+                Optional ONNX Runtime options applied at load time. Supported
+                keys: ``execution_provider`` (``"cpu"`` or ``"cuda"``),
+                ``device_id``, ``intra_threads``, ``inter_threads``,
+                ``parallel_execution``. CUDA requires a CUDA-enabled build.
+
             max_new_tokens:
                 Backward-compatible alias for
                 ``generation_kwargs={"max_new_tokens": ...}``. Ignored when
@@ -185,14 +192,16 @@ class LightOnOCR:
         """
 
         model_path = Path(model_id_or_path)
-        kwargs = dict(generation_kwargs) if generation_kwargs is not None else None
+        gen_kwargs = dict(generation_kwargs) if generation_kwargs is not None else None
+        rt_kwargs = dict(runtime_kwargs) if runtime_kwargs is not None else None
 
         if model_path.exists():
             return cls(
                 _NativeLightOnOCR._load_model_dir(
                     model_path,
                     preset=preset,
-                    generation_kwargs=kwargs,
+                    generation_kwargs=gen_kwargs,
+                    runtime_kwargs=rt_kwargs,
                     max_new_tokens=max_new_tokens,
                     vision_encoder=None,
                     embedding=None,
@@ -219,7 +228,8 @@ class LightOnOCR:
             _NativeLightOnOCR._load_model_dir(
                 Path(snapshot_path),
                 preset=preset,
-                generation_kwargs=kwargs,
+                generation_kwargs=gen_kwargs,
+                runtime_kwargs=rt_kwargs,
                 max_new_tokens=max_new_tokens,
                 vision_encoder=None,
                 embedding=None,

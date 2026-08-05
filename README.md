@@ -209,7 +209,7 @@ Optional arguments are accepted in this order:
 
 ```bash
 cargo run --example inference -- \
-  <model-dir> <image-path> <default|fp16|q4>
+  <model-dir> <image-path> <default|fp16|q4> <cpu|cuda> <device-id>
 ```
 
 To print decoded output as tokens are generated:
@@ -232,7 +232,23 @@ cargo run --features load-dynamic --example inference
 cargo run --features load-dynamic --example streaming
 ```
 
-CPU ORT session options (`intra_threads`, `inter_threads`, parallel execution) are configured through `RuntimeOptions` on `LightOnOCROptions`. Defaults use host parallelism for intra-op threads. To compare thread settings on your machine:
+ORT session options (`execution_provider`, `intra_threads`, `inter_threads`,
+parallel execution) are configured through `RuntimeOptions` on
+`LightOnOCROptions`. Defaults use the CPU provider and host parallelism for
+intra-op threads.
+
+CUDA requires `--features cuda` (and a CUDA-enabled ONNX Runtime; ort 2.0.0-rc.13
+targets CUDA 13 / cuDNN 9.x). Example:
+
+```bash
+cargo run --features load-dynamic,cuda --example inference -- \
+  models/lightonocr examples/SROIE-receipt.jpeg default cuda
+```
+
+Optional 5th argument is the CUDA `device_id` (default `0`). On CUDA, decode keeps
+KV past/present on the GPU via IoBinding; sampling still runs on the host.
+
+To compare CPU thread settings on your machine:
 
 ```bash
 cargo run --release --features load-dynamic --example cpu_ort_bench -- \
@@ -291,7 +307,8 @@ The Python bindings use the same native library and build infrastructure.
 - ✅ CPU performance work (KV-cache reuse, top-k/top-p, ORT session tuning, decode host reuse, inference bench)
 - 🚧 Generation parity and deterministic seeded generation
 - 🚧 Broader processor parity coverage
-- 🚧 Non-CPU execution providers (CUDA, CoreML, DirectML)
+- ✅ CUDA execution provider + device-resident decoder KV (IoBinding)
+- 🚧 CoreML / DirectML execution providers
 - 🚧 Python exposure of runtime / EP options
 
 See **[ROADMAP.md](docs/ROADMAP.md)** for milestone detail.

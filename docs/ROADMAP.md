@@ -92,13 +92,17 @@ Session input `TensorRef` wrappers are still rebuilt each step (lifetime-bound t
 Wire non-CPU ONNX Runtime execution providers through `RuntimeOptions` without
 changing model contracts.
 
+### Completed
+
+- ✅ CUDA EP registration and session wiring (`--features cuda`)
+- ✅ Device-resident decoder KV via IoBinding (CUDA generate path; host path unchanged)
+- ✅ Expose EP / thread options through Python `runtime_kwargs`
+- ✅ Packaging notes for GPU / accelerator runtimes (wheels stay CPU-default)
+
 ### Planned work
 
-- CUDA EP registration and session wiring
 - CoreML EP (macOS / Apple Silicon)
 - DirectML EP (Windows)
-- Expose EP / thread options through the Python bindings
-- Packaging notes for GPU / accelerator runtimes (wheels may stay CPU-default)
 
 ---
 

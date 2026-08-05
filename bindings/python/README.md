@@ -37,14 +37,27 @@ pip install "fast-lightonocr[cpu]"
 pip install "fast-lightonocr[cuda]"
 ```
 
-> **Note**
->
-> CUDA packaging is available through a dedicated build profile, although CUDA
-> execution is not yet fully supported.
+CUDA wheels/builds enable the native `cuda` Cargo feature. Use a CUDA-enabled
+ONNX Runtime and compatible CUDA 13 / cuDNN stack. Select the provider at load
+time:
+
+```python
+model = LightOnOCR.from_pretrained(
+    "onnx-community/LightOnOCR-2-1B-ONNX",
+    runtime_kwargs={
+        "execution_provider": "cuda",
+        "device_id": 0,
+    },
+)
+```
+
+Default published wheels remain CPU-oriented; the CUDA extra is a dedicated
+build profile. On CUDA, decoder KV past/present stay on device during generate;
+token sampling still runs on the host.
 
 Prebuilt wheels are currently published for Linux x86_64 and macOS arm64. These
 wheels bundle the required ONNX Runtime shared library, so no additional runtime
-installation or environment configuration is required.
+installation or environment configuration is required for the CPU profile.
 
 macOS x86_64 (Intel) wheels are not published because ONNX Runtime 1.28 does
 not provide a compatible Python wheel for that platform.

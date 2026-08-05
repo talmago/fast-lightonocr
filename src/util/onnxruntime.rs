@@ -24,8 +24,10 @@ pub enum ExecutionProvider {
 
     /// CUDA execution provider.
     ///
-    /// Reserved for a future milestone. Selecting this provider currently
-    /// returns an error at session creation time.
+    /// Requires building with `--features cuda` and a CUDA-enabled ONNX Runtime.
+    /// Registration fails hard if CUDA cannot be initialized (no silent CPU
+    /// fallback). Autoregressive decode keeps KV tensors on device when this
+    /// provider is selected; see the decoder CUDA helpers.
     Cuda {
         /// CUDA device index.
         device_id: usize,
@@ -144,9 +146,10 @@ pub(crate) fn session_builder(options: &RuntimeOptions) -> Result<SessionBuilder
     let builder = builder
         .with_inter_threads(inter_threads)
         .map_err(session_config_error)?;
-    builder
+    let builder = builder
         .with_parallel_execution(options.parallel_execution)
-        .map_err(session_config_error)
+        .map_err(session_config_error)?;
+    apply_execution_provider(builder, options.execution_provider)
 }
 
 fn session_config_error<T>(source: ort::Error<T>) -> Error {
@@ -158,12 +161,42 @@ fn session_config_error<T>(source: ort::Error<T>) -> Error {
 fn validate_execution_provider(execution_provider: ExecutionProvider) -> Result<()> {
     match execution_provider {
         ExecutionProvider::Cpu => Ok(()),
+        #[cfg(feature = "cuda")]
+        ExecutionProvider::Cuda { .. } => Ok(()),
+        #[cfg(not(feature = "cuda"))]
         ExecutionProvider::Cuda { device_id } => Err(Error::OnnxRuntimeCompatibility {
             reason: format!(
-                "CUDA execution provider (device_id={device_id}) is not wired yet; \
-                 use ExecutionProvider::Cpu"
+                "CUDA execution provider (device_id={device_id}) requires building with \
+                 `--features cuda`; use ExecutionProvider::Cpu or rebuild with the cuda feature"
             ),
         }),
+    }
+}
+
+fn apply_execution_provider(
+    builder: SessionBuilder,
+    execution_provider: ExecutionProvider,
+) -> Result<SessionBuilder> {
+    match execution_provider {
+        ExecutionProvider::Cpu => Ok(builder),
+        #[cfg(feature = "cuda")]
+        ExecutionProvider::Cuda { device_id } => {
+            let device_id =
+                i32::try_from(device_id).map_err(|_| Error::OnnxRuntimeCompatibility {
+                    reason: format!("CUDA device_id {device_id} is out of range for i32"),
+                })?;
+            builder
+                .with_execution_providers([ort::ep::CUDA::default()
+                    .with_device_id(device_id)
+                    .build()
+                    .error_on_failure()])
+                .map_err(session_config_error)
+        }
+        #[cfg(not(feature = "cuda"))]
+        ExecutionProvider::Cuda { .. } => {
+            // validate_execution_provider already rejected this case.
+            unreachable!("CUDA EP rejected without the cuda feature")
+        }
     }
 }
 
@@ -328,21 +361,29 @@ fn parse_version_part(version: &str, part: Option<&str>, name: &str) -> Result<u
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "cuda"))]
     #[test]
-    fn rejects_unwired_cuda_execution_provider() {
+    fn rejects_cuda_execution_provider_without_feature() {
         let options = RuntimeOptions::default()
             .with_execution_provider(ExecutionProvider::Cuda { device_id: 0 });
 
         let error = validate_execution_provider(options.execution_provider)
-            .expect_err("CUDA EP should be rejected until wired");
+            .expect_err("CUDA EP should be rejected without the cuda feature");
 
         match error {
             Error::OnnxRuntimeCompatibility { reason } => {
                 assert!(reason.contains("CUDA"));
-                assert!(reason.contains("not wired"));
+                assert!(reason.contains("--features cuda"));
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn accepts_cuda_execution_provider_with_feature() {
+        validate_execution_provider(ExecutionProvider::Cuda { device_id: 0 })
+            .expect("CUDA EP should validate when the cuda feature is enabled");
     }
 
     #[test]

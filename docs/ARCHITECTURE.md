@@ -287,9 +287,11 @@ The inference engine owns one ONNX Runtime session for each exported model:
 
 Sessions are created during model initialization and reused for the lifetime of the inference engine.
 
-CPU sessions are configured through `RuntimeOptions`: intra-op thread count (defaulting to host parallelism), optional inter-op threads, and sequential vs parallel execution mode. Graph optimization level 3 is applied explicitly. Because vision, embedding, and decoder run one after another for a single OCR request, each session may use the full intra-op thread budget. When ONNX Runtime is built with OpenMP, prefer `OMP_NUM_THREADS` over `intra_threads`.
+Sessions are configured through `RuntimeOptions`: execution provider, intra-op thread count (defaulting to host parallelism), optional inter-op threads, and sequential vs parallel execution mode. Graph optimization level 3 is applied explicitly. Because vision, embedding, and decoder run one after another for a single OCR request, each session may use the full intra-op thread budget. When ONNX Runtime is built with OpenMP, prefer `OMP_NUM_THREADS` over `intra_threads`.
 
-CUDA execution provider selection is reserved but not wired yet; selecting it fails at session creation with a clear error.
+The default execution provider is CPU. CUDA is available when the crate is built with `--features cuda` and a CUDA-enabled ONNX Runtime is present. Selecting CUDA without that feature fails at session creation with a clear error; with the feature enabled, CUDA EP registration fails hard if the provider cannot initialize (no silent CPU fallback).
+
+On the CUDA path, autoregressive decode keeps KV past/present tensors on device via ORT IoBinding. Token sampling still runs on the host from final-position logits. The host `KvCache` type and CPU decode path remain the default when CUDA is not selected; CUDA helpers are compile-gated behind the `cuda` feature so CPU builds are unchanged.
 
 The runtime provides lightweight, strongly typed wrappers around the exported ONNX models, exposing Rust domain types such as `ImageTensor`, `ImageFeatures`, `InputEmbeddings`, `AttentionMask`, `Logits`, and `KvCache` rather than raw ONNX tensors.
 
