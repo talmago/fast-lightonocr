@@ -13,6 +13,7 @@
 - 🎛️ Multiple model presets (FP16, Q4)
 - 📥 Built-in model download utility
 - 💻 CPU-first execution
+- ⚡ ~31 tok/s E2E on Apple Silicon CPU (Q4, greedy, 256 tokens; see `inference_bench`)
 - 🔌 Optional dynamic loading of ONNX Runtime
 - 🐍 Python bindings with Hugging Face model download support
 
@@ -246,6 +247,11 @@ cargo run --release --features load-dynamic --example inference_bench -- \
 ```
 
 Optional third argument selects presets (comma-separated), e.g. `q4` or `q4,default`.
+
+`tok_s` is E2E-normalized (`tokens / process_file` seconds), so vision/prefill
+cost is included. Numbers vary by machine, ORT build, thread settings, image,
+and decoding mode; the Features callout (~31 tok/s) is a representative Apple
+Silicon CPU result for Q4 greedy at 256 new tokens.
 
 When ONNX Runtime is built with OpenMP, prefer `OMP_NUM_THREADS` over `intra_threads`.
 

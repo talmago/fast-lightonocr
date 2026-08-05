@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Literal, TypeAlias, Union
+from typing import Any, Literal, Mapping, TypeAlias, Union
 
 from ._native import LightOnOCR as _NativeLightOnOCR
 from .parser import (
@@ -143,6 +143,7 @@ class LightOnOCR:
         local_files_only: bool = False,
         *,
         preset: Preset = "default",
+        generation_kwargs: Mapping[str, Any] | None = None,
         max_new_tokens: int | None = None,
     ) -> LightOnOCR:
         """Load a pretrained LightOnOCR model.
@@ -169,20 +170,29 @@ class LightOnOCR:
             preset:
                 ONNX model preset to load.
 
+            generation_kwargs:
+                Optional overrides merged onto the decoder generation config
+                after load. Supported keys: ``max_new_tokens``, ``do_sample``,
+                ``temperature``, ``top_k``, ``top_p``.
+
             max_new_tokens:
-                Optional override for the model generation configuration.
+                Backward-compatible alias for
+                ``generation_kwargs={"max_new_tokens": ...}``. Ignored when
+                ``max_new_tokens`` is already present in ``generation_kwargs``.
 
         Returns:
             Loaded :class:`LightOnOCR` instance.
         """
 
         model_path = Path(model_id_or_path)
+        kwargs = dict(generation_kwargs) if generation_kwargs is not None else None
 
         if model_path.exists():
             return cls(
                 _NativeLightOnOCR._load_model_dir(
                     model_path,
                     preset=preset,
+                    generation_kwargs=kwargs,
                     max_new_tokens=max_new_tokens,
                     vision_encoder=None,
                     embedding=None,
@@ -209,12 +219,25 @@ class LightOnOCR:
             _NativeLightOnOCR._load_model_dir(
                 Path(snapshot_path),
                 preset=preset,
+                generation_kwargs=kwargs,
                 max_new_tokens=max_new_tokens,
                 vision_encoder=None,
                 embedding=None,
                 decoder=None,
             )
         )
+
+    @property
+    def generation_kwargs(self) -> dict[str, Any]:
+        """Effective generation knobs on the loaded decoder config."""
+
+        return dict(self._native.generation_kwargs)
+
+    @generation_kwargs.setter
+    def generation_kwargs(self, value: Mapping[str, Any]) -> None:
+        """Merge generation overrides onto the loaded decoder config."""
+
+        self._native.generation_kwargs = dict(value)
 
     def process(
         self,

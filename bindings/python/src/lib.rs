@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use fast_lightonocr::{
-    FinishReason, LightOnOCR as NativeLightOnOCR, LightOnOCROptions, OCRResult as NativeOCRResult,
+    FinishReason, GenerationConfig, LightOnOCR as NativeLightOnOCR, LightOnOCROptions,
+    OCRResult as NativeOCRResult,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyType;
+use pyo3::types::{PyDict, PyType};
 
 /// OCR inference result.
 #[pyclass(name = "OCRResult", module = "fast_lightonocr._native")]
@@ -85,6 +86,7 @@ impl PyLightOnOCR {
         model_dir,
         *,
         preset = "default",
+        generation_kwargs = None,
         max_new_tokens = None,
         vision_encoder = None,
         embedding = None,
@@ -95,20 +97,46 @@ impl PyLightOnOCR {
         py: Python<'_>,
         model_dir: PathBuf,
         preset: &str,
+        generation_kwargs: Option<&Bound<'_, PyDict>>,
         max_new_tokens: Option<usize>,
         vision_encoder: Option<PathBuf>,
         embedding: Option<PathBuf>,
         decoder: Option<PathBuf>,
     ) -> PyResult<Self> {
-        let options =
-            options_from_args(preset, max_new_tokens, vision_encoder, embedding, decoder)?;
-        let model = py.allow_threads(|| {
+        // Generation overrides are applied onto GenerationConfig after load so
+        // LightOnOCROptions does not grow a parallel override type.
+        let options = options_from_args(preset, vision_encoder, embedding, decoder)?;
+        let mut model = py.allow_threads(|| {
             NativeLightOnOCR::from_pretrained(&model_dir, options).map_err(to_py_err)
         })?;
+
+        apply_generation_kwargs(
+            model.generation_config_mut(),
+            generation_kwargs,
+            max_new_tokens,
+        )?;
 
         Ok(Self {
             inner: Mutex::new(model),
         })
+    }
+
+    /// Current generation knobs as a dict (`max_new_tokens`, `do_sample`, …).
+    #[getter]
+    fn generation_kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let model = self.inner.lock().map_err(|_| {
+            PyRuntimeError::new_err("LightOnOCR instance is unavailable after a panic")
+        })?;
+        generation_config_to_dict(py, model.generation_config())
+    }
+
+    /// Merge generation overrides onto the loaded decoder config.
+    #[setter]
+    fn set_generation_kwargs(&self, kwargs: &Bound<'_, PyDict>) -> PyResult<()> {
+        let mut model = self.inner.lock().map_err(|_| {
+            PyRuntimeError::new_err("LightOnOCR instance is unavailable after a panic")
+        })?;
+        apply_generation_kwargs(model.generation_config_mut(), Some(kwargs), None)
     }
 
     /// Loads and processes an image from disk.
@@ -136,7 +164,6 @@ impl PyLightOnOCR {
 
 fn options_from_args(
     preset: &str,
-    max_new_tokens: Option<usize>,
     vision_encoder: Option<PathBuf>,
     embedding: Option<PathBuf>,
     decoder: Option<PathBuf>,
@@ -152,9 +179,6 @@ fn options_from_args(
         }
     };
 
-    if let Some(max_new_tokens) = max_new_tokens {
-        options.max_new_tokens = Some(max_new_tokens);
-    }
     if let Some(vision_encoder) = vision_encoder {
         options.vision_encoder = vision_encoder;
     }
@@ -166,6 +190,89 @@ fn options_from_args(
     }
 
     Ok(options)
+}
+
+/// Applies generation overrides onto an existing [`GenerationConfig`].
+///
+/// Keys present in `generation_kwargs` win over the bare `max_new_tokens`
+/// alias when both are provided.
+fn apply_generation_kwargs(
+    config: &mut GenerationConfig,
+    generation_kwargs: Option<&Bound<'_, PyDict>>,
+    max_new_tokens_alias: Option<usize>,
+) -> PyResult<()> {
+    let mut applied_max_new_tokens = false;
+
+    if let Some(kwargs) = generation_kwargs {
+        for (key, value) in kwargs.iter() {
+            let key = key.extract::<String>()?;
+            match key.as_str() {
+                "max_new_tokens" => {
+                    config.max_new_tokens = extract_usize(&value, "max_new_tokens")?;
+                    applied_max_new_tokens = true;
+                }
+                "do_sample" => {
+                    config.do_sample = value.extract::<bool>().map_err(|_| {
+                        PyValueError::new_err("generation_kwargs['do_sample'] must be a bool")
+                    })?;
+                }
+                "temperature" => {
+                    config.temperature = value.extract::<f32>().map_err(|_| {
+                        PyValueError::new_err("generation_kwargs['temperature'] must be a float")
+                    })?;
+                }
+                "top_k" => {
+                    config.top_k = extract_u32(&value, "top_k")?;
+                }
+                "top_p" => {
+                    config.top_p = value.extract::<f32>().map_err(|_| {
+                        PyValueError::new_err("generation_kwargs['top_p'] must be a float")
+                    })?;
+                }
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "unsupported generation_kwargs key {other:?}; expected one of: \
+                         max_new_tokens, do_sample, temperature, top_k, top_p"
+                    )));
+                }
+            }
+        }
+    }
+
+    if !applied_max_new_tokens && let Some(max_new_tokens) = max_new_tokens_alias {
+        config.max_new_tokens = max_new_tokens;
+    }
+
+    Ok(())
+}
+
+fn generation_config_to_dict<'py>(
+    py: Python<'py>,
+    config: &GenerationConfig,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("max_new_tokens", config.max_new_tokens)?;
+    dict.set_item("do_sample", config.do_sample)?;
+    dict.set_item("temperature", config.temperature)?;
+    dict.set_item("top_k", config.top_k)?;
+    dict.set_item("top_p", config.top_p)?;
+    Ok(dict)
+}
+
+fn extract_usize(value: &Bound<'_, PyAny>, key: &str) -> PyResult<usize> {
+    value.extract::<usize>().map_err(|_| {
+        PyValueError::new_err(format!(
+            "generation_kwargs['{key}'] must be a non-negative int"
+        ))
+    })
+}
+
+fn extract_u32(value: &Bound<'_, PyAny>, key: &str) -> PyResult<u32> {
+    value.extract::<u32>().map_err(|_| {
+        PyValueError::new_err(format!(
+            "generation_kwargs['{key}'] must be a non-negative int"
+        ))
+    })
 }
 
 fn to_py_err(error: fast_lightonocr::Error) -> PyErr {
