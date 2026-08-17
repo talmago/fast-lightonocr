@@ -37,7 +37,6 @@ CPU wheels bundle ONNX Runtime. No extra environment setup is required.
 
 ### CUDA
 
-<<<<<<< Updated upstream
 Published CUDA wheels are a dedicated build profile (default PyPI wheels stay
 CPU). Install a CUDA-profile package plus the extra:
 
@@ -48,35 +47,13 @@ pip install "fast-lightonocr[cuda]"
 Requires a compatible NVIDIA driver. The `cuda` extra pulls in
 `onnxruntime-gpu` (CUDA 13 / cuDNN) and `nvidia-cublas`. Select CUDA at load
 time with `runtime_kwargs` — see [Runtime options](#runtime-options).
-=======
-Published wheels are CPU-only. The `[cuda]` extra installs `onnxruntime-gpu`
-(CUDA 13 / cuDNN) and `nvidia-cublas`; it does not change the native
-extension. CUDA inference needs a from-source build with the `cuda` profile
-(see [Building from source](#building-from-source)).
-
-Select CUDA at load time:
-
-```python
-model = LightOnOCR.from_pretrained(
-    "onnx-community/LightOnOCR-2-1B-ONNX",
-    runtime_kwargs={
-        "execution_provider": "cuda",
-        "device_id": 0,
-    },
-)
-```
-
-When `execution_provider="cuda"`, `from_pretrained` preloads the pip NVIDIA
-CUDA/cuDNN libraries (`onnxruntime.preload_dlls`), so `LD_LIBRARY_PATH` is
-usually unnecessary. CPU loads never take that path.
->>>>>>> Stashed changes
 
 ### Building from source
 
-Run these from `bindings/python`. The build backend discovers ONNX Runtime from
+The build backend discovers ONNX Runtime from
 `ORT_DYLIB_PATH` when set, otherwise from the profile’s Python ORT package,
 validates ONNX Runtime 1.28.x (C API level 27), and bundles the native runtime
-into the wheel. A Rust toolchain is required.
+into the wheel.
 
 Pip extras cannot select Cargo features. Pass the build profile with
 `-C profile=...` (or `BUILD_PROFILE`) so the backend enables the matching
@@ -85,30 +62,15 @@ features and isolated-build ORT package.
 #### CPU
 
 ```bash
-cd bindings/python
 pip install -v ".[cpu]"
-<<<<<<< Updated upstream
 # or explicitly:
-BUILD_PROFILE=cpu pip install -v ".[cpu]"
-=======
-```
-
-Or explicitly:
-
-```bash
 pip install -v ".[cpu]" -C profile=cpu
->>>>>>> Stashed changes
 ```
 
 #### CUDA
 
 ```bash
-<<<<<<< Updated upstream
-cd bindings/python
-BUILD_PROFILE=cuda pip install -v ".[cuda]"
-=======
 pip install -v ".[cuda]" -C profile=cuda
->>>>>>> Stashed changes
 ```
 
 From a PyPI sdist (skip the published CPU wheel):
@@ -117,13 +79,11 @@ From a PyPI sdist (skip the published CPU wheel):
 pip install -v "fast-lightonocr[cuda]" --no-binary=fast-lightonocr -C profile=cuda
 ```
 
-`BUILD_PROFILE=cuda` is equivalent to `-C profile=cuda`. Either one enables
-the native `cuda` Cargo feature, pulls `onnxruntime-gpu` into the isolated
-build environment, and injects the ORT CUDA provider plugins
+`-C profile=cuda` (or `BUILD_PROFILE=cuda`) enables the native `cuda` Cargo
+feature, pulls `onnxruntime-gpu` into the isolated build environment, and
+injects the ORT CUDA provider plugins
 (`libonnxruntime_providers_{shared,cuda}`) into the wheel. The `[cuda]` extra
-still installs the CUDA 13 / cuDNN / cublas user libraries used at runtime.
-
-For editable/`maturin develop` workflows, see [Development](#development).
+installs the CUDA 13 / cuDNN / cublas user libraries used at runtime.
 
 ---
 
@@ -143,11 +103,6 @@ The first call downloads the required model files from Hugging Face and caches
 them locally.
 
 ---
-
-## Configuration
-
-`from_pretrained()` accepts a model preset plus two override dicts:
-`runtime_kwargs` (ONNX Runtime sessions) and `generation_kwargs` (decode).
 
 ### Model presets
 
@@ -357,19 +312,15 @@ Same profiles as [Building from source](#building-from-source):
 poetry run pip wheel . --wheel-dir dist
 
 # CUDA
-<<<<<<< Updated upstream
-BUILD_PROFILE=cuda poetry run pip wheel . --wheel-dir dist
+poetry run pip wheel . --wheel-dir dist -C profile=cuda
 # then install the wheel with the CUDA extra, e.g.
 # pip install "dist/fast_lightonocr-<ver>-*.whl[cuda]"
-=======
-poetry run pip wheel . --wheel-dir dist -C profile=cuda
->>>>>>> Stashed changes
 ```
 
 > **Note**
 >
 > Running `maturin develop` **without** `--features load-dynamic` is not
-> supported. Production/`pip install` builds use the custom build backend for
+> supported. `pip install` builds use the custom build backend for
 > ONNX Runtime linking; editable development uses `load-dynamic` with
 > `ORT_DYLIB_PATH`.
 
