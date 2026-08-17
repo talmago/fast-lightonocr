@@ -95,7 +95,10 @@ changing model contracts.
 ### Completed
 
 - ✅ CUDA EP registration and session wiring (`--features cuda`)
-- ✅ CUDA EP generate path (default: host KV + `Session::run`; opt-in IoBinding device KV via `FAST_LIGHTONOCR_CUDA_DEVICE_KV`)
+- ✅ `KVCacheBackend` abstraction (`KVCache` / `CudaKVCache`) with a single
+  `generate_streaming` loop (see [`KV.md`](KV.md))
+- ✅ CUDA EP generate defaults to IoBinding `CudaKVCache`; escape hatch
+  `FAST_LIGHTONOCR_CUDA_HOST_KV`
 - ✅ Expose EP / thread options through Python `runtime_kwargs`
 - ✅ Packaging notes for GPU / accelerator runtimes (wheels stay CPU-default)
 
@@ -103,6 +106,8 @@ changing model contracts.
 
 - CoreML EP (macOS / Apple Silicon)
 - DirectML EP (Windows)
+- CUDA follow-ons (non-blocking): vision/embed residency checks, IoBinding
+  object reuse across steps, batch>1 on `CudaKVCache` if needed
 
 ---
 

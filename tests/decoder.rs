@@ -4,7 +4,7 @@ use std::process::Command;
 use fast_lightonocr::Error;
 use fast_lightonocr::Result;
 use fast_lightonocr::model::Logits;
-use fast_lightonocr::model::decoder::{Decoder, DecoderConfig, KvCache, LayerCache, LayerType};
+use fast_lightonocr::model::decoder::{Decoder, DecoderConfig, KVCache, LayerCache, LayerType};
 use fast_lightonocr::model::{AttentionMask, InputEmbeddings};
 use fast_lightonocr::model::{DataType, ModelType};
 use serde::Deserialize;
@@ -59,7 +59,7 @@ fn reports_missing_decoder_model() {
 fn initializes_empty_kv_cache_from_decoder_config() {
     let config =
         DecoderConfig::from_file(fixture_path("lightonocr_config").join("config.json")).unwrap();
-    let cache = KvCache::empty(&config, 1).unwrap();
+    let cache = KVCache::empty(&config, 1).unwrap();
 
     assert!(cache.is_empty());
     assert_eq!(cache.layer_count(), 28);
@@ -70,7 +70,7 @@ fn initializes_empty_kv_cache_from_decoder_config() {
 
 #[test]
 fn kv_cache_validates_layer_shapes() {
-    let error = KvCache::new(
+    let error = KVCache::new(
         vec![LayerCache::new(vec![0.0; 3], vec![0.0; 4])],
         1,
         1,
@@ -80,7 +80,7 @@ fn kv_cache_validates_layer_shapes() {
     .expect_err("shape validation should fail");
 
     match error {
-        Error::InvalidKvCache { reason } => {
+        Error::InvalidKVCache { reason } => {
             assert!(reason.contains("key length"));
         }
         other => panic!("expected invalid KV cache error, got {other:?}"),

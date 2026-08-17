@@ -284,7 +284,7 @@ pub enum Error {
 
     /// A decoder key/value cache was malformed.
     #[error("invalid KV cache: {reason}")]
-    InvalidKvCache {
+    InvalidKVCache {
         /// Explanation of the malformed cache.
         reason: String,
     },

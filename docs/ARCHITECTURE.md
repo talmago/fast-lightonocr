@@ -259,9 +259,11 @@ Responsibilities include:
 - token selection
 - stopping criteria
 
-During autoregressive generation the decoder keeps one `KvCache` and overwrites
-each layer's key/value buffers in place after every step, reusing allocation
-capacity instead of allocating a fresh cache from the full `present.*` outputs.
+During autoregressive generation the decoder selects a [`KVCacheBackend`](KV.md)
+once (`KVCache` on CPU, `CudaKVCache` by default on the CUDA EP). The host
+`KVCache` overwrites each layer's key/value buffers in place after every step,
+reusing allocation capacity instead of allocating a fresh cache from the full
+`present.*` outputs. See [`KV.md`](KV.md) for the CUDA IoBinding path.
 
 The generation loop also reuses a single-token `InputEmbeddings` buffer via
 `EmbeddingModel::embed_into`, copies only the final logits position into a
@@ -291,9 +293,14 @@ Sessions are configured through `RuntimeOptions`: execution provider, intra-op t
 
 The default execution provider is CPU. CUDA is available when the crate is built with `--features cuda` and a CUDA-enabled ONNX Runtime is present. Selecting CUDA without that feature fails at session creation with a clear error; with the feature enabled, CUDA EP registration fails hard if the provider cannot initialize (no silent CPU fallback).
 
-On the CUDA path, autoregressive decode still uses the host `KvCache` and `Session::run` by default (graphs may run on GPU via the CUDA EP; KV traffic crosses the host). An experimental IoBinding device-KV path is available behind `FAST_LIGHTONOCR_CUDA_DEVICE_KV=1`; empty past tensors start on the host and present outputs are promoted to device after the first step. Token sampling always runs on the host from final-position logits. CUDA helpers are compile-gated behind the `cuda` feature so CPU builds are unchanged.
+On the CUDA path, autoregressive decode defaults to `CudaKVCache` with ORT
+IoBinding so past/present stay on device after prefill (empty `seq=0` past
+starts on the host; see [`KV.md`](KV.md)). Set `FAST_LIGHTONOCR_CUDA_HOST_KV`
+to force the host `KVCache` + `Session::run` path for debugging. Token sampling
+always runs on the host from final-position logits. CUDA helpers are
+compile-gated behind the `cuda` feature so CPU builds are unchanged.
 
-The runtime provides lightweight, strongly typed wrappers around the exported ONNX models, exposing Rust domain types such as `ImageTensor`, `ImageFeatures`, `InputEmbeddings`, `AttentionMask`, `Logits`, and `KvCache` rather than raw ONNX tensors.
+The runtime provides lightweight, strongly typed wrappers around the exported ONNX models, exposing Rust domain types such as `ImageTensor`, `ImageFeatures`, `InputEmbeddings`, `AttentionMask`, `Logits`, and `KVCache` rather than raw ONNX tensors.
 
 Runtime behavior—including model selection, execution providers, and session configuration—is encapsulated behind the inference engine, allowing higher-level components to remain independent of ONNX Runtime implementation details.
 

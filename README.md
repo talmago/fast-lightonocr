@@ -245,8 +245,10 @@ cargo run --features load-dynamic,cuda --example inference -- \
   models/lightonocr examples/SROIE-receipt.jpeg default cuda
 ```
 
-Optional 5th argument is the CUDA `device_id` (default `0`). On CUDA, decode keeps
-KV past/present on the GPU via IoBinding; sampling still runs on the host.
+Optional 5th argument is the CUDA `device_id` (default `0`). On CUDA, decode
+defaults to device-resident KV via IoBinding (`CudaKVCache`); set
+`FAST_LIGHTONOCR_CUDA_HOST_KV` to force the host `KVCache` path. Sampling still
+runs on the host. See [`docs/KV.md`](docs/KV.md).
 
 To compare CPU thread settings on your machine:
 
@@ -307,7 +309,7 @@ The Python bindings use the same native library and build infrastructure.
 - ✅ CPU performance work (KV-cache reuse, top-k/top-p, ORT session tuning, decode host reuse, inference bench)
 - 🚧 Generation parity and deterministic seeded generation
 - 🚧 Broader processor parity coverage
-- ✅ CUDA execution provider + device-resident decoder KV (IoBinding)
+- ✅ CUDA execution provider + `KVCacheBackend` (`KVCache` / `CudaKVCache`)
 - 🚧 CoreML / DirectML execution providers
 - 🚧 Python exposure of runtime / EP options
 

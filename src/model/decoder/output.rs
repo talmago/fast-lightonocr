@@ -1,6 +1,6 @@
 //! Decoder output value.
 
-use super::kv_cache::KvCache;
+use super::kv_cache::KVCache;
 use super::logits::Logits;
 
 /// Output from a single decoder invocation.
@@ -10,12 +10,12 @@ pub struct DecoderOutput {
     pub logits: Logits,
 
     /// Updated key/value cache returned by the decoder.
-    pub kv_cache: KvCache,
+    pub kv_cache: KVCache,
 }
 
 impl DecoderOutput {
     /// Creates decoder output from logits and an updated KV cache.
-    pub fn new(logits: Logits, kv_cache: KvCache) -> Self {
+    pub fn new(logits: Logits, kv_cache: KVCache) -> Self {
         Self { logits, kv_cache }
     }
 }
