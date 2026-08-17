@@ -1,18 +1,23 @@
 //! Decoder key/value cache representation.
 //!
-//! The host [`KvCache`] is always available. With `--features cuda`, this module
-//! also provides [`CudaKvState`] for device-resident past/present tensors used
-//! by the decoder IoBinding path.
+//! The host [`KVCache`] is always available and implements [`KVCacheBackend`].
+//! With `--features cuda`, [`ActiveKVCache`] can hold a CUDA-resident cache
+//! from `cuda_backend`.
+//!
+//! See [`docs/KV.md`](../../../docs/KV.md) for the host vs CUDA design.
 
 use super::DecoderConfig;
+#[cfg(feature = "cuda")]
+use super::cuda_backend::CudaKVCache;
 
-#[cfg(feature = "cuda")]
-use ort::memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType};
-#[cfg(feature = "cuda")]
-use ort::value::{DynValue, Tensor, TensorElementType, ValueType};
-
-#[cfg(feature = "cuda")]
 use crate::{Error, Result};
+
+/// Pluggable past/present KV strategy used by autoregressive decode.
+pub(crate) trait KVCacheBackend {
+    fn batch_size(&self) -> usize;
+    fn past_sequence_length(&self) -> usize;
+    fn is_empty(&self) -> bool;
+}
 
 /// Key/value tensors for one decoder layer.
 ///
@@ -49,14 +54,14 @@ impl LayerCache {
     }
 }
 
-/// Opaque decoder key/value cache passed between decoder invocations.
+/// Host-resident decoder key/value cache.
 ///
-/// `KvCache` contains one [`LayerCache`] for each decoder layer. The cache is
+/// `KVCache` contains one [`LayerCache`] for each decoder layer. The cache is
 /// initialized empty for the first decoder pass. During autoregressive
 /// generation the decoder overwrites each layer's buffers in place, reusing
 /// allocation capacity across steps.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct KvCache {
+pub struct KVCache {
     layers: Vec<LayerCache>,
     batch_size: usize,
     past_sequence_length: usize,
@@ -64,11 +69,11 @@ pub struct KvCache {
     head_dim: usize,
 }
 
-impl KvCache {
+impl KVCache {
     /// Creates an empty KV cache for a decoder configuration and batch size.
-    pub fn empty(config: &DecoderConfig, batch_size: usize) -> crate::Result<Self> {
+    pub fn empty(config: &DecoderConfig, batch_size: usize) -> Result<Self> {
         if batch_size == 0 {
-            return Err(crate::Error::InvalidKvCache {
+            return Err(Error::InvalidKVCache {
                 reason: "batch size must be greater than zero".to_owned(),
             });
         }
@@ -93,19 +98,19 @@ impl KvCache {
         past_sequence_length: usize,
         num_key_value_heads: usize,
         head_dim: usize,
-    ) -> crate::Result<Self> {
+    ) -> Result<Self> {
         if batch_size == 0 {
-            return Err(crate::Error::InvalidKvCache {
+            return Err(Error::InvalidKVCache {
                 reason: "batch size must be greater than zero".to_owned(),
             });
         }
         if num_key_value_heads == 0 {
-            return Err(crate::Error::InvalidKvCache {
+            return Err(Error::InvalidKVCache {
                 reason: "KV head count must be greater than zero".to_owned(),
             });
         }
         if head_dim == 0 {
-            return Err(crate::Error::InvalidKvCache {
+            return Err(Error::InvalidKVCache {
                 reason: "KV head dimension must be greater than zero".to_owned(),
             });
         }
@@ -118,7 +123,7 @@ impl KvCache {
         )?;
         for (index, layer) in layers.iter().enumerate() {
             if layer.key.len() != expected {
-                return Err(crate::Error::InvalidKvCache {
+                return Err(Error::InvalidKVCache {
                     reason: format!(
                         "layer {index} key length {} does not match shape {:?}",
                         layer.key.len(),
@@ -132,7 +137,7 @@ impl KvCache {
                 });
             }
             if layer.value.len() != expected {
-                return Err(crate::Error::InvalidKvCache {
+                return Err(Error::InvalidKVCache {
                     reason: format!(
                         "layer {index} value length {} does not match shape {:?}",
                         layer.value.len(),
@@ -210,163 +215,90 @@ impl KvCache {
     }
 }
 
+impl KVCacheBackend for KVCache {
+    fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    fn past_sequence_length(&self) -> usize {
+        self.past_sequence_length
+    }
+
+    fn is_empty(&self) -> bool {
+        self.past_sequence_length == 0
+    }
+}
+
+/// Selected KV backend for one autoregressive generate run.
+pub(crate) enum ActiveKVCache {
+    Host(KVCache),
+    #[cfg(feature = "cuda")]
+    Cuda(CudaKVCache),
+}
+
+impl KVCacheBackend for ActiveKVCache {
+    fn batch_size(&self) -> usize {
+        match self {
+            Self::Host(cache) => cache.batch_size,
+            #[cfg(feature = "cuda")]
+            Self::Cuda(cache) => cache.batch_size(),
+        }
+    }
+
+    fn past_sequence_length(&self) -> usize {
+        match self {
+            Self::Host(cache) => cache.past_sequence_length,
+            #[cfg(feature = "cuda")]
+            Self::Cuda(cache) => cache.past_sequence_length(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Host(cache) => cache.past_sequence_length == 0,
+            #[cfg(feature = "cuda")]
+            Self::Cuda(cache) => cache.is_empty(),
+        }
+    }
+}
+
 pub(crate) fn values_per_tensor(
     batch_size: usize,
     sequence_length: usize,
     num_key_value_heads: usize,
     head_dim: usize,
-) -> crate::Result<usize> {
+) -> Result<usize> {
     batch_size
         .checked_mul(num_key_value_heads)
         .and_then(|value| value.checked_mul(sequence_length))
         .and_then(|value| value.checked_mul(head_dim))
-        .ok_or_else(|| crate::Error::InvalidKvCache {
+        .ok_or_else(|| Error::InvalidKVCache {
             reason: "KV cache tensor shape is too large".to_owned(),
         })
 }
 
-/// Device-resident KV past tensors for CUDA IoBinding decode.
-///
-/// Compiled only with `--features cuda`. Not a public API twin of [`KvCache`];
-/// it exists so the decoder can keep past/present on GPU across steps.
-#[cfg(feature = "cuda")]
-pub(crate) struct CudaKvState {
-    pub past_keys: Vec<DynValue>,
-    pub past_values: Vec<DynValue>,
-    pub past_sequence_length: usize,
-    pub batch_size: usize,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[cfg(feature = "cuda")]
-impl CudaKvState {
-    /// Creates empty `(batch, kv_heads, 0, head_dim)` past tensors on the **host**.
-    ///
-    /// Zero-length past tensors are allocated on CPU on purpose: CUDA allocations
-    /// with a zero sequence dimension are unreliable with ORT IoBinding and have
-    /// been observed to segfault. After the first decode step, [`Self::promote_present`]
-    /// replaces these with device-resident present tensors.
-    pub(crate) fn empty(config: &DecoderConfig, batch_size: usize) -> Result<Self> {
-        if batch_size == 0 {
-            return Err(Error::InvalidKvCache {
-                reason: "batch size must be greater than zero".to_owned(),
-            });
-        }
-
-        let shape = [
-            batch_size as i64,
-            config.num_key_value_heads as i64,
-            0_i64,
-            config.head_dim as i64,
+    #[test]
+    fn host_kv_cache_backend_surface() {
+        let layers = vec![
+            LayerCache::new(Vec::new(), Vec::new()),
+            LayerCache::new(Vec::new(), Vec::new()),
         ];
-
-        let mut past_keys = Vec::with_capacity(config.num_hidden_layers);
-        let mut past_values = Vec::with_capacity(config.num_hidden_layers);
-        for _ in 0..config.num_hidden_layers {
-            // Empty f32 buffer with a zero-length sequence axis.
-            let key = Tensor::<f32>::from_array((shape, Vec::<f32>::new())).map_err(|source| {
-                Error::OnnxRuntimeCompatibility {
-                    reason: format!("failed to create empty host past key: {source}"),
-                }
-            })?;
-            let value =
-                Tensor::<f32>::from_array((shape, Vec::<f32>::new())).map_err(|source| {
-                    Error::OnnxRuntimeCompatibility {
-                        reason: format!("failed to create empty host past value: {source}"),
-                    }
-                })?;
-            past_keys.push(key.into_dyn());
-            past_values.push(value.into_dyn());
-        }
-
-        Ok(Self {
-            past_keys,
-            past_values,
-            past_sequence_length: 0,
-            batch_size,
-        })
+        let cache = KVCache::new(layers, 1, 0, 2, 4).unwrap();
+        assert!(cache.is_empty());
+        assert_eq!(KVCacheBackend::batch_size(&cache), 1);
+        assert_eq!(KVCacheBackend::past_sequence_length(&cache), 0);
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.past_sequence_length == 0
+    #[test]
+    fn active_host_backend() {
+        let layers = vec![LayerCache::new(Vec::new(), Vec::new())];
+        let cache = KVCache::new(layers, 2, 0, 1, 4).unwrap();
+        let active = ActiveKVCache::Host(cache);
+        assert_eq!(KVCacheBackend::batch_size(&active), 2);
+        assert!(KVCacheBackend::is_empty(&active));
     }
-
-    /// Replaces past buffers with present outputs and advances sequence length.
-    pub(crate) fn promote_present(
-        &mut self,
-        past_keys: Vec<DynValue>,
-        past_values: Vec<DynValue>,
-        total_sequence_length: usize,
-    ) {
-        self.past_keys = past_keys;
-        self.past_values = past_values;
-        self.past_sequence_length = total_sequence_length;
-    }
-}
-
-#[cfg(feature = "cuda")]
-pub(crate) fn cuda_memory_info(device_id: i32) -> Result<MemoryInfo<'static>> {
-    MemoryInfo::new(
-        AllocationDevice::CUDA,
-        device_id,
-        AllocatorType::Device,
-        MemoryType::Default,
-    )
-    .map_err(|source| Error::OnnxRuntimeCompatibility {
-        reason: format!("failed to create CUDA MemoryInfo: {source}"),
-    })
-}
-
-#[cfg(feature = "cuda")]
-pub(crate) fn cpu_output_memory_info() -> Result<MemoryInfo<'static>> {
-    MemoryInfo::new(
-        AllocationDevice::CPU,
-        0,
-        AllocatorType::Device,
-        MemoryType::CPUOutput,
-    )
-    .map_err(|source| Error::OnnxRuntimeCompatibility {
-        reason: format!("failed to create CPU output MemoryInfo: {source}"),
-    })
-}
-
-#[cfg(feature = "cuda")]
-pub(crate) fn validate_device_cache_output(
-    value: &DynValue,
-    name: &str,
-    batch_size: usize,
-    total_sequence_length: usize,
-    config: &DecoderConfig,
-) -> Result<()> {
-    let ValueType::Tensor { ty, shape, .. } = value.dtype() else {
-        return Err(Error::InvalidDecoderOutput {
-            reason: format!("`{name}` is not a tensor"),
-        });
-    };
-    if *ty != TensorElementType::Float32 {
-        return Err(Error::InvalidDecoderOutput {
-            reason: format!("`{name}` has element type {ty:?}, expected Float32"),
-        });
-    }
-    if shape.len() != 4 {
-        return Err(Error::InvalidDecoderOutput {
-            reason: format!("`{name}` has rank {}, expected 4", shape.len()),
-        });
-    }
-    let expected = [
-        batch_size as i64,
-        config.num_key_value_heads as i64,
-        total_sequence_length as i64,
-        config.head_dim as i64,
-    ];
-    for (axis, expected_dim) in expected.into_iter().enumerate() {
-        if shape[axis] != expected_dim {
-            return Err(Error::InvalidDecoderOutput {
-                reason: format!(
-                    "`{name}` dimension {axis} is {}, expected {expected_dim}",
-                    shape[axis]
-                ),
-            });
-        }
-    }
-    Ok(())
 }

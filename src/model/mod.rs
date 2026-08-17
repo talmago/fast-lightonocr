@@ -23,7 +23,7 @@ pub use embedding_model::{EmbeddingConfig, EmbeddingModel};
 
 // Decoder and generation
 pub use decoder::{
-    Decoder, DecoderConfig, FinishReason, GenerationConfig, GenerationOutput, KvCache, LayerCache,
+    Decoder, DecoderConfig, FinishReason, GenerationConfig, GenerationOutput, KVCache, LayerCache,
 };
 
 // High-level OCR pipeline

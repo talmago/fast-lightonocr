@@ -6,6 +6,10 @@
 //! cargo run --release --features load-dynamic --example inference_bench -- \
 //!   models/lightonocr examples/SROIE-receipt.jpeg q4,default,fp16
 //! ```
+//!
+//! For CUDA (device KV by default), rebuild with `--features load-dynamic,cuda`
+//! and pass a CUDA provider through your usual runtime options / example args.
+//! Compare against `FAST_LIGHTONOCR_CUDA_HOST_KV=1` to measure host-KV overhead.
 
 use std::cmp::Ordering;
 use std::path::Path;

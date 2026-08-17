@@ -29,6 +29,7 @@ Before modifying a subsystem, read its corresponding documentation.
 | `ARCHITECTURE.md` | High-level system architecture |
 | `ROADMAP.md` | Development roadmap and milestones |
 | `MODEL_CONTRACTS.md` | ONNX model interfaces and tensor contracts |
+| `KV.md` | Decoder KV cache (host vs CUDA) and GPU decode plan |
 
 Avoid duplicating documentation across multiple files. High-level concepts belong in `ARCHITECTURE.md`, while subsystem-specific implementation details belong in their dedicated documents.
 

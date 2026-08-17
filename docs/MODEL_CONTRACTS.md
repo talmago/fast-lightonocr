@@ -158,6 +158,14 @@ Each decoder layer receives:
 
 The exported model contains **28 decoder layers**, each with one key tensor and one value tensor.
 
+#### Prefill (`past_sequence_length == 0`)
+
+The first decoder call uses empty past tensors with sequence length `0`. On the
+CUDA IoBinding path those empty pasts are allocated on the **host**; after the
+first step, `present.*` outputs remain on device and become the next step's
+past. See [`KV.md`](KV.md). Host `KVCache` keeps empty `Vec<f32>` buffers for
+the same shape.
+
 ## Outputs
 
 ### Logits
