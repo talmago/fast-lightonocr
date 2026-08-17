@@ -15,7 +15,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  PYTHON_PACKAGE_DIR: bindings/python
+  PYTHON_PACKAGE_DIR: python
 
 jobs:
   build-sdist:

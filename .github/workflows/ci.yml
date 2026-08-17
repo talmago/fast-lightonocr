@@ -18,7 +18,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  PYTHON_PACKAGE_DIR: bindings/python
+  PYTHON_PACKAGE_DIR: python
 
 jobs:
   checks:
@@ -78,13 +78,13 @@ jobs:
         run: |
           python -m ruff format \
             --check \
-            "${PYTHON_PACKAGE_DIR}/python" \
+            "${PYTHON_PACKAGE_DIR}/fast_lightonocr" \
             "${PYTHON_PACKAGE_DIR}/fast_lightonocr_build"
 
       - name: Lint Python
         run: |
           python -m ruff check \
-            "${PYTHON_PACKAGE_DIR}/python" \
+            "${PYTHON_PACKAGE_DIR}/fast_lightonocr" \
             "${PYTHON_PACKAGE_DIR}/fast_lightonocr_build"
 
       - name: Check Python build backend

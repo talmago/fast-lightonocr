@@ -10,7 +10,7 @@ keywords = ["ocr", "onnx", "lightonocr", "inference"]
 categories = ["computer-vision", "science"]
 
 [workspace]
-members = ["bindings/python"]
+members = ["python"]
 resolver = "3"
 
 [dependencies]

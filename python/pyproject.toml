@@ -66,7 +66,8 @@ backend-path = ["."]
 [tool.maturin]
 bindings = "pyo3"
 module-name = "fast_lightonocr._native"
-python-source = "python"
+python-source = "."
+exclude = ["fast_lightonocr_build", "fast_lightonocr_build/**"]
 
 [tool.fast-lightonocr.build]
 default-profile = "cpu"
@@ -87,7 +88,7 @@ build-requirements = [
 
 [tool.ruff]
 line-length = 88
-src = ["python"]
+src = ["fast_lightonocr", "fast_lightonocr_build"]
 target-version = "py310"
 
 [tool.ruff.lint]

@@ -63,7 +63,7 @@ pip install fast-lightonocr
 
 For installation options, build profiles, and the complete Python API, see:
 
-- **[bindings/python/README.md](bindings/python/README.md)**
+- **[python/README.md](python/README.md)**
 
 ---
 
@@ -279,7 +279,7 @@ Python bindings are implemented using PyO3 and maturin.
 
 For installation, packaging, development workflow, build profiles, and ONNX Runtime configuration, see:
 
-- **[bindings/python/README.md](bindings/python/README.md)**
+- **[python/README.md](python/README.md)**
 
 ### ONNX Runtime
 

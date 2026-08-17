@@ -160,7 +160,7 @@ cargo test
 Python bindings are located under:
 
 ```text
-bindings/python/
+python/
 ```
 
 The bindings should remain a thin wrapper around the Rust library.
