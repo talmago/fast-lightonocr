@@ -311,7 +311,7 @@ The Python bindings use the same native library and build infrastructure.
 - 🚧 Broader processor parity coverage
 - ✅ CUDA execution provider + `KVCacheBackend` (`KVCache` / `CudaKVCache`)
 - 🚧 CoreML / DirectML execution providers
-- 🚧 Python exposure of runtime / EP options
+- ✅ Python exposure of runtime / EP options (`runtime_kwargs`)
 
 See **[ROADMAP.md](docs/ROADMAP.md)** for milestone detail.
 
