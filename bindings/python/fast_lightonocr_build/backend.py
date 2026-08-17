@@ -28,9 +28,12 @@ import maturin
 from packaging.requirements import Requirement
 
 PROFILE_ENV = "BUILD_PROFILE"
+# pip extras are not visible to PEP 517 backends. Source CUDA builds must
+# pass a profile via BUILD_PROFILE or `pip install -C profile=cuda`.
 PROFILE_CONFIG_KEYS = (
     "fast-lightonocr.profile",
     "fast_lightonocr.profile",
+    "profile",
 )
 
 REQUIRED_ORT_MAJOR = 1

@@ -100,6 +100,18 @@ jobs:
           assert backend._profiled_config_settings(None)["maturin.build-args"] == []
           assert "onnxruntime>=1.28,<2" in backend.get_requires_for_build_wheel(None)
 
+          cuda_settings = {"profile": "cuda"}
+          assert backend._selected_profile(cuda_settings).name == "cuda"
+          assert backend._profiled_config_settings(cuda_settings)[
+              "maturin.build-args"
+          ] == [
+              "--features",
+              "cuda",
+          ]
+          assert "onnxruntime-gpu>=1.28,<2" in backend.get_requires_for_build_wheel(
+              cuda_settings
+          )
+
           os.environ["BUILD_PROFILE"] = "cuda"
 
           assert backend._profiled_config_settings(None)["maturin.build-args"] == [
