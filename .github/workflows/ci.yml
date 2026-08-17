@@ -78,13 +78,13 @@ jobs:
         run: |
           python -m ruff format \
             --check \
-            "${PYTHON_PACKAGE_DIR}/python" \
+            "${PYTHON_PACKAGE_DIR}/fast_lightonocr" \
             "${PYTHON_PACKAGE_DIR}/fast_lightonocr_build"
 
       - name: Lint Python
         run: |
           python -m ruff check \
-            "${PYTHON_PACKAGE_DIR}/python" \
+            "${PYTHON_PACKAGE_DIR}/fast_lightonocr" \
             "${PYTHON_PACKAGE_DIR}/fast_lightonocr_build"
 
       - name: Check Python build backend
@@ -144,7 +144,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "$WHEEL"
 
-          python - <<'PY'
+          python -P - <<'PY'
           from fast_lightonocr import LightOnOCR
           print(LightOnOCR)
           PY
