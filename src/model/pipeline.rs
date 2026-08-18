@@ -1,6 +1,7 @@
 //! High-level public API for LightOnOCR.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use ::image::DynamicImage;
 
@@ -83,6 +84,31 @@ impl LightOnOCROptions {
     #[must_use]
     pub fn with_runtime(self, runtime: RuntimeOptions) -> Self {
         Self { runtime, ..self }
+    }
+}
+
+/// Wall-clock stage timings for one OCR request, in milliseconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StageTimings {
+    /// Image load from disk when using [`LightOnOCR::process_file_with_timings`].
+    pub io_ms: f64,
+    /// Image preprocessing, prompt rendering, tokenization, and mask creation.
+    pub prep_ms: f64,
+    /// Vision encoder ONNX execution (including host output extraction).
+    pub vision_ms: f64,
+    /// Token embedding ONNX execution.
+    pub embed_ms: f64,
+    /// Image-feature merge into the prompt embedding sequence.
+    pub merge_ms: f64,
+    /// Autoregressive decoder generation and final text decoding.
+    pub decode_ms: f64,
+}
+
+impl StageTimings {
+    /// Returns the sum of all recorded stage durations.
+    #[must_use]
+    pub fn total_ms(&self) -> f64 {
+        self.io_ms + self.prep_ms + self.vision_ms + self.embed_ms + self.merge_ms + self.decode_ms
     }
 }
 
@@ -221,13 +247,29 @@ impl LightOnOCR {
         image: &DynamicImage,
         system_prompt: Option<&str>,
     ) -> Result<OCRResult> {
-        let (input_embeddings, attention_mask) = self.prepare_inputs(image, system_prompt)?;
+        Ok(self.process_with_timings(image, system_prompt)?.0)
+    }
 
+    /// Processes an in-memory image and returns stage-level wall-clock timings.
+    ///
+    /// When `system_prompt` is `None`, the processor uses the model's default
+    /// prompt behavior.
+    pub fn process_with_timings(
+        &mut self,
+        image: &DynamicImage,
+        system_prompt: Option<&str>,
+    ) -> Result<(OCRResult, StageTimings)> {
+        let (input_embeddings, attention_mask, mut timings) =
+            self.prepare_inputs_timed(image, system_prompt)?;
+
+        let decode_started = Instant::now();
         let generated =
             self.decoder
                 .generate(input_embeddings, attention_mask, &mut self.embedding_model)?;
+        let result = self.decode_result(generated)?;
+        timings.decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
 
-        self.decode_result(generated)
+        Ok((result, timings))
     }
 
     /// Processes an in-memory image while streaming decoded text chunks.
@@ -295,8 +337,33 @@ impl LightOnOCR {
         image_path: impl AsRef<Path>,
         system_prompt: Option<&str>,
     ) -> Result<OCRResult> {
+        Ok(self.process_file_with_timings(image_path, system_prompt)?.0)
+    }
+
+    /// Loads and processes an image from disk, returning stage-level timings.
+    ///
+    /// When `system_prompt` is `None`, the processor uses the model's default
+    /// prompt behavior.
+    pub fn process_file_with_timings(
+        &mut self,
+        image_path: impl AsRef<Path>,
+        system_prompt: Option<&str>,
+    ) -> Result<(OCRResult, StageTimings)> {
+        let io_started = Instant::now();
         let image = image::open(image_path)?;
-        self.process(&image, system_prompt)
+        let mut timings = StageTimings {
+            io_ms: io_started.elapsed().as_secs_f64() * 1000.0,
+            ..StageTimings::default()
+        };
+
+        let (result, prep_timings) = self.process_with_timings(&image, system_prompt)?;
+        timings.prep_ms = prep_timings.prep_ms;
+        timings.vision_ms = prep_timings.vision_ms;
+        timings.embed_ms = prep_timings.embed_ms;
+        timings.merge_ms = prep_timings.merge_ms;
+        timings.decode_ms = prep_timings.decode_ms;
+
+        Ok((result, timings))
     }
 
     /// Loads and processes an image from disk while streaming decoded text chunks.
@@ -332,6 +399,18 @@ impl LightOnOCR {
         image: &DynamicImage,
         system_prompt: Option<&str>,
     ) -> Result<(InputEmbeddings, AttentionMask)> {
+        let (input_embeddings, attention_mask, _timings) =
+            self.prepare_inputs_timed(image, system_prompt)?;
+        Ok((input_embeddings, attention_mask))
+    }
+
+    fn prepare_inputs_timed(
+        &mut self,
+        image: &DynamicImage,
+        system_prompt: Option<&str>,
+    ) -> Result<(InputEmbeddings, AttentionMask, StageTimings)> {
+        let mut timings = StageTimings::default();
+
         let mut content = Vec::new();
 
         if let Some(prompt) = system_prompt {
@@ -345,22 +424,30 @@ impl LightOnOCR {
             content,
         }];
 
+        let prep_started = Instant::now();
         let processed = self
             .processor
             .process(&messages, std::slice::from_ref(image))?;
+        timings.prep_ms = prep_started.elapsed().as_secs_f64() * 1000.0;
 
-        let image_features = self.vision_encoder.encode(&processed.pixel_values)?;
+        let vision_started = Instant::now();
+        let image_features = self.vision_encoder.encode_reuse(&processed.pixel_values)?;
+        timings.vision_ms = vision_started.elapsed().as_secs_f64() * 1000.0;
 
+        let embed_started = Instant::now();
         let text_embeddings = self.embedding_model.embed(&processed.input_ids)?;
+        timings.embed_ms = embed_started.elapsed().as_secs_f64() * 1000.0;
 
+        let merge_started = Instant::now();
         let input_embeddings = merge_image_features(
             &processed.input_ids,
             &text_embeddings,
-            &image_features,
+            image_features,
             self.decoder.image_token_id(),
         )?;
+        timings.merge_ms = merge_started.elapsed().as_secs_f64() * 1000.0;
 
-        Ok((input_embeddings, processed.attention_mask))
+        Ok((input_embeddings, processed.attention_mask, timings))
     }
 
     /// Decodes generated token IDs into the final OCR result.

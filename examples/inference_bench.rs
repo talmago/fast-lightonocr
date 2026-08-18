@@ -1,6 +1,7 @@
 //! End-to-end latency / tokens-per-second bench across model presets.
 //!
-//! Reports wall-clock `process_file` time (E2E-normalized tok/s, not pure decode).
+//! Reports wall-clock `process_file` time (E2E-normalized tok/s, not pure decode)
+//! and per-stage breakdown (prep / vision / embed / merge / decode).
 //!
 //! ```bash
 //! cargo run --release --features load-dynamic --example inference_bench -- \
@@ -15,7 +16,7 @@ use std::cmp::Ordering;
 use std::path::Path;
 use std::time::Instant;
 
-use fast_lightonocr::{LightOnOCR, LightOnOCROptions};
+use fast_lightonocr::{LightOnOCR, LightOnOCROptions, StageTimings};
 
 const DEFAULT_MODEL_DIR: &str = "models/lightonocr";
 const DEFAULT_IMAGE: &str = "examples/SROIE-receipt.jpeg";
@@ -54,6 +55,9 @@ fn main() -> fast_lightonocr::Result<()> {
     println!("host_parallelism={host_threads}");
     println!("warmup={WARMUP_RUNS} timed_runs={TIMED_RUNS}");
     println!("tok_s is E2E-normalized (tokens / process_file seconds)");
+    println!(
+        "stage_ms columns are median wall-clock per request (io/prep/vision/embed/merge/decode)"
+    );
     if std::env::var_os("ORT_DYLIB_PATH").is_some() {
         println!("ORT_DYLIB_PATH is set");
     }
@@ -62,8 +66,21 @@ fn main() -> fast_lightonocr::Result<()> {
     }
     println!();
     println!(
-        "{:<8} {:<8} {:>5} {:>10} {:>10} {:>10} {:>8} {:>8}",
-        "preset", "mode", "max", "load_ms", "mean_ms", "median_ms", "tokens", "tok_s"
+        "{:<8} {:<8} {:>5} {:>10} {:>10} {:>10} {:>8} {:>8}  {:>5} {:>5} {:>6} {:>5} {:>5} {:>6}",
+        "preset",
+        "mode",
+        "max",
+        "load_ms",
+        "mean_ms",
+        "median_ms",
+        "tokens",
+        "tok_s",
+        "io",
+        "prep",
+        "vision",
+        "embed",
+        "merge",
+        "decode"
     );
 
     for preset in presets {
@@ -132,15 +149,23 @@ fn bench_row(
     }
 
     let mut times_ms = Vec::with_capacity(TIMED_RUNS);
+    let mut stage_samples = Vec::with_capacity(TIMED_RUNS);
     let mut tokens = 0usize;
     for _ in 0..TIMED_RUNS {
         let started = Instant::now();
-        let result = model.process_file(image_path, None)?;
+        let (result, stages) = model.process_file_with_timings(image_path, None)?;
         times_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+        stage_samples.push(stages);
         tokens = result.token_ids().len();
     }
 
     times_ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    stage_samples.sort_by(|a, b| {
+        a.total_ms()
+            .partial_cmp(&b.total_ms())
+            .unwrap_or(Ordering::Equal)
+    });
+
     let mean = times_ms.iter().sum::<f64>() / times_ms.len() as f64;
     let median = times_ms[times_ms.len() / 2];
     let tok_s = if mean > 0.0 {
@@ -148,10 +173,23 @@ fn bench_row(
     } else {
         0.0
     };
+    let stages = median_stages(&stage_samples);
 
     println!(
-        "{preset:<8} {mode:<8} {max_new_tokens:>5} {load_ms:>10.0} {mean:>10.0} {median:>10.0} {tokens:>8} {tok_s:>8.2}"
+        "{preset:<8} {mode:<8} {max_new_tokens:>5} {load_ms:>10.0} {mean:>10.0} {median:>10.0} {tokens:>8} {tok_s:>8.2}  \
+         {io:>5.0} {prep:>5.0} {vision:>6.0} {embed:>5.0} {merge:>5.0} {decode:>6.0}",
+        io = stages.io_ms,
+        prep = stages.prep_ms,
+        vision = stages.vision_ms,
+        embed = stages.embed_ms,
+        merge = stages.merge_ms,
+        decode = stages.decode_ms,
     );
 
     Ok(())
+}
+
+fn median_stages(samples: &[StageTimings]) -> StageTimings {
+    let mid = samples.len() / 2;
+    samples[mid]
 }

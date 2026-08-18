@@ -84,4 +84,39 @@ impl ImageFeatures {
         let offset = (batch * self.num_merged_patches + patch) * self.hidden_size + hidden;
         self.data.get(offset).copied()
     }
+
+    /// Overwrites this tensor in place from contiguous feature data.
+    ///
+    /// Reuses the existing allocation when the new shape fits in the current
+    /// capacity; otherwise the buffer grows as needed.
+    pub fn copy_from_slice(
+        &mut self,
+        data: &[f32],
+        batch_size: usize,
+        num_merged_patches: usize,
+        hidden_size: usize,
+    ) -> crate::Result<()> {
+        let expected = batch_size
+            .checked_mul(num_merged_patches)
+            .and_then(|value| value.checked_mul(hidden_size))
+            .ok_or_else(|| crate::Error::InvalidVisionOutput {
+                reason: "image feature shape is too large".to_owned(),
+            })?;
+        if data.len() != expected {
+            return Err(crate::Error::InvalidVisionOutput {
+                reason: format!(
+                    "image feature data length {} does not match shape {:?}",
+                    data.len(),
+                    (batch_size, num_merged_patches, hidden_size)
+                ),
+            });
+        }
+
+        self.data.clear();
+        self.data.extend_from_slice(data);
+        self.batch_size = batch_size;
+        self.num_merged_patches = num_merged_patches;
+        self.hidden_size = hidden_size;
+        Ok(())
+    }
 }

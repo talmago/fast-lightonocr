@@ -13,7 +13,7 @@ pub mod util;
 
 pub use model::{
     Decoder, EmbeddingModel, ExecutionProvider, FinishReason, GenerationConfig, ImageTensor,
-    LightOnOCR, LightOnOCROptions, OCRResult, RuntimeOptions, VisionEncoder,
+    LightOnOCR, LightOnOCROptions, OCRResult, RuntimeOptions, StageTimings, VisionEncoder,
 };
 
 pub use processor::{ImageProcessor, ImageProcessorConfig, Processor};

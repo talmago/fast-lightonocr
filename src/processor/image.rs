@@ -60,30 +60,27 @@ impl ImageProcessor {
             });
         }
 
-        let mut processed = Vec::with_capacity(images.len());
+        let mut resized = Vec::with_capacity(images.len());
         let mut max_height = 0;
         let mut max_width = 0;
 
         for image in images {
-            let resized = self.resize_image(&image.to_rgb8())?;
-            let normalized = self.normalize_image(&resized);
-            max_height = max_height.max(normalized.height);
-            max_width = max_width.max(normalized.width);
-            processed.push(normalized);
+            let rgb = self.resize_image(&image.to_rgb8())?;
+            max_height = max_height.max(rgb.height() as usize);
+            max_width = max_width.max(rgb.width() as usize);
+            resized.push(rgb);
         }
 
         let mut data = vec![0.0; images.len() * CHANNELS * max_height * max_width];
-        for (batch_index, image) in processed.iter().enumerate() {
-            for channel in 0..CHANNELS {
-                for y in 0..image.height {
-                    for x in 0..image.width {
-                        let source = (channel * image.height + y) * image.width + x;
-                        let target =
-                            (((batch_index * CHANNELS + channel) * max_height + y) * max_width) + x;
-                        data[target] = image.data[source];
-                    }
-                }
-            }
+        for (batch_index, image) in resized.iter().enumerate() {
+            write_nchw_normalized(
+                &mut data,
+                batch_index,
+                max_height,
+                max_width,
+                image,
+                &self.config,
+            );
         }
 
         ImageTensor::new(data, images.len(), CHANNELS, max_height, max_width)
@@ -110,41 +107,32 @@ impl ImageProcessor {
             filter_type(self.config.resample),
         ))
     }
-
-    fn normalize_image(&self, image: &RgbImage) -> NormalizedImage {
-        let height = image.height() as usize;
-        let width = image.width() as usize;
-        let mut data = vec![0.0; CHANNELS * height * width];
-        let config = &self.config;
-
-        for (x, y, pixel) in image.enumerate_pixels() {
-            for channel in 0..CHANNELS {
-                let mut value = f32::from(pixel[channel]);
-                if config.do_rescale {
-                    value *= config.rescale_factor;
-                }
-                if config.do_normalize {
-                    value = (value - config.image_mean[channel]) / config.image_std[channel];
-                }
-
-                let offset = (channel * height + y as usize) * width + x as usize;
-                data[offset] = value;
-            }
-        }
-
-        NormalizedImage {
-            data,
-            height,
-            width,
-        }
-    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct NormalizedImage {
-    data: Vec<f32>,
-    height: usize,
-    width: usize,
+fn write_nchw_normalized(
+    data: &mut [f32],
+    batch_index: usize,
+    max_height: usize,
+    max_width: usize,
+    image: &RgbImage,
+    config: &ImageProcessorConfig,
+) {
+    for (x, y, pixel) in image.enumerate_pixels() {
+        for channel in 0..CHANNELS {
+            let mut value = f32::from(pixel[channel]);
+            if config.do_rescale {
+                value *= config.rescale_factor;
+            }
+            if config.do_normalize {
+                value = (value - config.image_mean[channel]) / config.image_std[channel];
+            }
+
+            let offset = (((batch_index * CHANNELS + channel) * max_height + y as usize)
+                * max_width)
+                + x as usize;
+            data[offset] = value;
+        }
+    }
 }
 
 fn validate_config(config: &ImageProcessorConfig) -> Result<()> {

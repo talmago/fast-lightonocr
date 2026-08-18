@@ -23,6 +23,8 @@ pub struct VisionEncoder {
     session: Session,
     config: VisionConfig,
     model_path: PathBuf,
+    /// Reused host buffer for [`Self::encode_reuse`].
+    output_scratch: ImageFeatures,
 }
 
 impl VisionEncoder {
@@ -57,6 +59,7 @@ impl VisionEncoder {
             session,
             config,
             model_path,
+            output_scratch: ImageFeatures::default(),
         })
     }
 
@@ -77,46 +80,80 @@ impl VisionEncoder {
     /// The returned image features have shape
     /// `(batch_size, num_merged_patches, hidden_size)`.
     pub fn encode(&mut self, image_tensor: &ImageTensor) -> Result<ImageFeatures> {
-        validate_image_tensor(image_tensor, &self.config)?;
-
-        let (batch_size, channels, height, width) = image_tensor.shape();
-        let input_shape = [
-            batch_size as i64,
-            channels as i64,
-            height as i64,
-            width as i64,
-        ];
-        let input = TensorRef::from_array_view((input_shape, image_tensor.as_slice()))
-            .map_err(|source| Error::VisionTensorCreation { source })?;
-
-        let mut outputs = self
-            .session
-            .run(ort::inputs! { VISION_INPUT_NAME => input })
-            .map_err(|source| Error::VisionInference { source })?;
-        let output =
-            outputs
-                .remove(VISION_OUTPUT_NAME)
-                .ok_or_else(|| Error::InvalidVisionOutput {
-                    reason: format!("missing `{VISION_OUTPUT_NAME}` output"),
-                })?;
-        let (shape, data) =
-            output
-                .try_extract_tensor::<f32>()
-                .map_err(|source| Error::InvalidVisionOutput {
-                    reason: format!(
-                        "failed to extract `{VISION_OUTPUT_NAME}` as float32: {source}"
-                    ),
-                })?;
-        let shape = shape.as_ref();
-        validate_image_feature_shape(shape, &self.config)?;
-
-        ImageFeatures::new(
-            data.to_vec(),
-            usize::try_from(shape[0]).expect("validated non-negative batch size"),
-            usize::try_from(shape[1]).expect("validated non-negative patch count"),
-            usize::try_from(shape[2]).expect("validated non-negative hidden size"),
-        )
+        let mut output = ImageFeatures::default();
+        self.encode_into(image_tensor, &mut output)?;
+        Ok(output)
     }
+
+    /// Encodes a preprocessed image tensor into an existing [`ImageFeatures`] buffer.
+    ///
+    /// Prefer this over [`Self::encode`] when the output buffer can be reused
+    /// across OCR requests to avoid repeated host allocations.
+    pub fn encode_into(
+        &mut self,
+        image_tensor: &ImageTensor,
+        output: &mut ImageFeatures,
+    ) -> Result<()> {
+        run_encode(&mut self.session, &self.config, image_tensor, output)
+    }
+
+    /// Executes the vision encoder and returns a reference to a reused output buffer.
+    ///
+    /// The returned [`ImageFeatures`] are valid until the next call to
+    /// [`Self::encode`], [`Self::encode_into`], or [`Self::encode_reuse`].
+    pub fn encode_reuse(&mut self, image_tensor: &ImageTensor) -> Result<&ImageFeatures> {
+        run_encode(
+            &mut self.session,
+            &self.config,
+            image_tensor,
+            &mut self.output_scratch,
+        )?;
+        Ok(&self.output_scratch)
+    }
+}
+
+fn run_encode(
+    session: &mut Session,
+    config: &VisionConfig,
+    image_tensor: &ImageTensor,
+    output: &mut ImageFeatures,
+) -> Result<()> {
+    validate_image_tensor(image_tensor, config)?;
+
+    let (batch_size, channels, height, width) = image_tensor.shape();
+    let input_shape = [
+        batch_size as i64,
+        channels as i64,
+        height as i64,
+        width as i64,
+    ];
+    let input = TensorRef::from_array_view((input_shape, image_tensor.as_slice()))
+        .map_err(|source| Error::VisionTensorCreation { source })?;
+
+    let mut outputs = session
+        .run(ort::inputs! { VISION_INPUT_NAME => input })
+        .map_err(|source| Error::VisionInference { source })?;
+    let output_value =
+        outputs
+            .remove(VISION_OUTPUT_NAME)
+            .ok_or_else(|| Error::InvalidVisionOutput {
+                reason: format!("missing `{VISION_OUTPUT_NAME}` output"),
+            })?;
+    let (shape, data) =
+        output_value
+            .try_extract_tensor::<f32>()
+            .map_err(|source| Error::InvalidVisionOutput {
+                reason: format!("failed to extract `{VISION_OUTPUT_NAME}` as float32: {source}"),
+            })?;
+    let shape = shape.as_ref();
+    validate_image_feature_shape(shape, config)?;
+
+    output.copy_from_slice(
+        data,
+        usize::try_from(shape[0]).expect("validated non-negative batch size"),
+        usize::try_from(shape[1]).expect("validated non-negative patch count"),
+        usize::try_from(shape[2]).expect("validated non-negative hidden size"),
+    )
 }
 
 fn validate_session_contract(session: &Session, config: &VisionConfig) -> Result<()> {
