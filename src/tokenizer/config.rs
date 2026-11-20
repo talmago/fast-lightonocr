@@ -61,7 +61,7 @@ impl TokenizerConfig {
 }
 
 /// Tokenizer padding side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub enum PaddingSide {
     /// Add padding before token content.
     #[serde(rename = "left")]
@@ -69,11 +69,6 @@ pub enum PaddingSide {
 
     /// Add padding after token content.
     #[serde(rename = "right")]
+    #[default]
     Right,
-}
-
-impl Default for PaddingSide {
-    fn default() -> Self {
-        Self::Right
-    }
 }
