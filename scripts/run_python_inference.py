@@ -33,7 +33,7 @@ from transformers import (
 )
 
 
-DEFAULT_MODEL_DIR = Path("models/lightonocr")
+DEFAULT_MODEL_DIR = Path("models/LightOnOCR-2-1B-ONNX")
 
 
 # ----------------------------------------------------------------------

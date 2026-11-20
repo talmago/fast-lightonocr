@@ -44,7 +44,7 @@ Build the library:
 cargo build
 ```
 
-Download the official LightOnOCR model:
+Download the official LightOnOCR-2-1B ONNX model:
 
 ```bash
 python scripts/download_model.py
@@ -76,7 +76,7 @@ use fast_lightonocr::{LightOnOCR, LightOnOCROptions};
 
 fn main() -> fast_lightonocr::Result<()> {
     let mut model = LightOnOCR::from_pretrained(
-        "models/lightonocr",
+        "models/LightOnOCR-2-1B-ONNX",
         LightOnOCROptions::default(),
     )?;
 
@@ -197,7 +197,7 @@ cargo fmt
 
 The inference example defaults to:
 
-- model directory: `models/lightonocr`
+- model directory: `models/LightOnOCR-2-1B-ONNX`
 - image: `examples/SROIE-receipt.jpeg`
 - model preset: `default`
 
@@ -242,7 +242,7 @@ targets CUDA 13 / cuDNN 9.x). Example:
 
 ```bash
 cargo run --features load-dynamic,cuda --example inference -- \
-  models/lightonocr examples/SROIE-receipt.jpeg default cuda
+  models/LightOnOCR-2-1B-ONNX examples/SROIE-receipt.jpeg default cuda
 ```
 
 Optional 5th argument is the CUDA `device_id` (default `0`). On CUDA, decode
@@ -254,14 +254,14 @@ To compare CPU thread settings on your machine:
 
 ```bash
 cargo run --release --features load-dynamic --example cpu_ort_bench -- \
-  models/lightonocr q4
+  models/LightOnOCR-2-1B-ONNX q4
 ```
 
 For end-to-end latency and tokens/sec across presets (`q4` / `default` / `fp16`), generation lengths, and greedy vs sample:
 
 ```bash
 cargo run --release --features load-dynamic --example inference_bench -- \
-  models/lightonocr examples/SROIE-receipt.jpeg
+  models/LightOnOCR-2-1B-ONNX examples/SROIE-receipt.jpeg
 ```
 
 Optional third argument selects presets (comma-separated), e.g. `q4` or `q4,default`.
@@ -322,7 +322,9 @@ See **[ROADMAP.md](docs/ROADMAP.md)** for milestone detail.
 Additional project documentation is available in:
 
 - **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — architecture overview, model pipeline, and design decisions.
-- **[MODEL_CONTRACTS.md](docs/MODEL_CONTRACTS.md)** — ONNX model interfaces and tensor contracts.
+- **[LightOnOCR-2 model spec](docs/LIGHTONOCR2_MODEL_SPEC.md)** — current checkpoint and ONNX tensor contracts.
+- **[LightOnOCR-3 model spec](docs/LIGHTONOCR3_MODEL_SPEC.md)** — inspected model-family details and pending graph contracts.
+- **[LightOnOCR-3 implementation plan](docs/exec-plans/proposed/LIGHTONOCR3_SUPPORT.md)** — staged execution plan.
 - **[ROADMAP.md](docs/ROADMAP.md)** — implementation milestones and future work.
 - **[AGENTS.md](AGENTS.md)** — development guidelines for AI coding agents and contributors.
 

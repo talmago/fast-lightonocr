@@ -3,7 +3,10 @@
 This document describes the host and CUDA KV-cache design for the decoder.
 
 High-level architecture still lives in [`ARCHITECTURE.md`](ARCHITECTURE.md).
-ONNX tensor contracts live in [`MODEL_CONTRACTS.md`](MODEL_CONTRACTS.md).
+The LightOnOCR-2 ONNX tensor contracts live in
+[`LIGHTONOCR2_MODEL_SPEC.md`](LIGHTONOCR2_MODEL_SPEC.md). Qwen3.5 cache/state
+contracts are pending ONNX export and are tracked in the
+[`LIGHTONOCR3_MODEL_SPEC.md`](LIGHTONOCR3_MODEL_SPEC.md).
 
 ---
 
@@ -111,5 +114,6 @@ Sampling always runs on the host from final-position logits.
   [`src/model/decoder/kv_cache.rs`](../src/model/decoder/kv_cache.rs),
   [`src/model/decoder/cuda_backend.rs`](../src/model/decoder/cuda_backend.rs)
   (`--features cuda` only)
-- Contracts: past/present shapes in [`MODEL_CONTRACTS.md`](MODEL_CONTRACTS.md)
+- LightOnOCR-2 past/present shapes: [`LIGHTONOCR2_MODEL_SPEC.md`](LIGHTONOCR2_MODEL_SPEC.md)
+- Qwen3.5 cache/state discovery: [`LIGHTONOCR3_MODEL_SPEC.md`](LIGHTONOCR3_MODEL_SPEC.md)
 - Roadmap EP section: [`ROADMAP.md`](ROADMAP.md)

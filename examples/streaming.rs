@@ -24,7 +24,7 @@ fn ensure_example_image() -> Result<(), Box<dyn std::error::Error>> {
 fn main() -> fast_lightonocr::Result<()> {
     let model_dir = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "models/lightonocr".to_owned());
+        .unwrap_or_else(|| "models/LightOnOCR-2-1B-ONNX".to_owned());
 
     let image_path = std::env::args()
         .nth(2)

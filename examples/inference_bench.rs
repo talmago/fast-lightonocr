@@ -5,7 +5,7 @@
 //!
 //! ```bash
 //! cargo run --release --features load-dynamic --example inference_bench -- \
-//!   models/lightonocr examples/SROIE-receipt.jpeg q4,default,fp16
+//!   models/LightOnOCR-2-1B-ONNX examples/SROIE-receipt.jpeg q4,default,fp16
 //! ```
 //!
 //! For CUDA (device KV by default), rebuild with `--features load-dynamic,cuda`
@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use fast_lightonocr::{LightOnOCR, LightOnOCROptions, StageTimings};
 
-const DEFAULT_MODEL_DIR: &str = "models/lightonocr";
+const DEFAULT_MODEL_DIR: &str = "models/LightOnOCR-2-1B-ONNX";
 const DEFAULT_IMAGE: &str = "examples/SROIE-receipt.jpeg";
 const WARMUP_RUNS: usize = 1;
 const TIMED_RUNS: usize = 3;

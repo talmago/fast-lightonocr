@@ -1,4 +1,4 @@
-# MODEL_CONTRACTS.md
+# LightOnOCR-2 Model Spec
 
 # Overview
 

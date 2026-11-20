@@ -5,7 +5,7 @@
 //! ORT intra-op thread behavior on a given machine.
 //!
 //! ```bash
-//! cargo run --release --features load-dynamic --example cpu_ort_bench -- models/lightonocr q4
+//! cargo run --release --features load-dynamic --example cpu_ort_bench -- models/LightOnOCR-2-1B-ONNX q4
 //! ```
 
 use std::time::Instant;
@@ -20,7 +20,7 @@ const TIMED_RUNS: usize = 3;
 fn main() -> fast_lightonocr::Result<()> {
     let model_dir = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "models/lightonocr".to_owned());
+        .unwrap_or_else(|| "models/LightOnOCR-2-1B-ONNX".to_owned());
     let preset = std::env::args().nth(2).unwrap_or_else(|| "q4".to_owned());
 
     let host_threads = std::thread::available_parallelism()

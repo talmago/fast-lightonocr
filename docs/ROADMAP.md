@@ -1,159 +1,44 @@
 # Roadmap
 
-This document tracks remaining implementation work for **Fast LightOnOCR**.
+This roadmap highlights future work for **Fast LightOnOCR**. The current Rust
+and Python inference path supports LightOnOCR-2. Model specifications are in
+[LIGHTONOCR2_MODEL_SPEC.md](LIGHTONOCR2_MODEL_SPEC.md) and
+[LIGHTONOCR3_MODEL_SPEC.md](LIGHTONOCR3_MODEL_SPEC.md).
 
-The native Rust inference pipeline is working end to end, with Python packaging
-and CLI-style examples in place. Remaining milestones focus on generation
-hardening, processor parity, and non-CPU execution providers.
+## Planned work
 
----
+### LightOnOCR-3 support
 
-# ✅ Completed Baseline
+The proposed execution plan starts by locking in the LightOnOCR-2 compatibility
+baseline, then adds config-based model-family loading and support for the new
+architectures. Follow the [LightOnOCR-3 execution plan](exec-plans/proposed/LIGHTONOCR3_SUPPORT.md).
 
-The core native inference path is in place:
+### Generation and processor parity
 
-- Native Rust public API
-- Tokenizer loading and text decoding
-- Processor-driven image preprocessing and prompt expansion
-- Vision encoder ONNX execution
-- Token embedding ONNX execution
-- Image-feature embedding merge
-- Decoder ONNX execution with KV-cache management
-- Greedy autoregressive generation
-- Temperature sampling
-- Top-k sampling
-- Top-p (nucleus) sampling
-- Configurable `max_new_tokens`
-- Streaming generation API and example
-- FP16 and Q4 model preset options
-- Dynamic ONNX Runtime loading support
-- Python bindings with PyO3 and maturin
-- Python `from_pretrained()` download helper using `huggingface_hub`
-- Python wheel packaging (CPU/CUDA build profiles, bundled ORT, release workflow)
-- Native CLI-style examples (`inference`, `streaming`) for local OCR
+- Add deterministic generation controls and broaden parity coverage against
+  the official implementation.
+- Improve image resize/resolution parity and cover more image sizes and aspect
+  ratios.
 
-Existing validation covers:
+### Execution providers
 
-- Configuration error handling
-- Tokenizer behavior
-- Processor resize and padding behavior
-- Pixtral image-processor parity fixture
-- Vision encoder output parity
-- Embedding model output parity
-- Decoder output parity
+- Add CoreML on macOS and DirectML on Windows.
+- Consider CUDA vision/embed residency and cache binding improvements when
+  measurements justify them.
 
----
+### Packaging and release
 
-# 🚧 Current Milestones
+- Review the public API, polish documentation, and prepare release artifacts
+  and published examples.
 
-## Generation Hardening
+## Completed work
 
-Strengthen generation behavior and parity with Hugging Face.
+The native Rust inference pipeline, Python bindings and Hub download helper,
+streaming generation, FP16/Q4 presets, CPU runtime tuning, and CUDA execution
+path are in place. Validation already covers configuration, tokenizer and
+processor behavior, and ONNX stage outputs.
 
-### Planned work
+## Later candidates
 
-- Deterministic generation with a public seeded-RNG option
-- Generation parity against Python
-- Additional stopping criteria and decoding option coverage
-
----
-
-## Processor Accuracy
-
-Improve preprocessing parity with the reference implementation.
-
-### Planned work
-
-- Resolution handling
-- Additional real-image parity tests
-- Edge-case validation for image sizes and aspect ratios
-
----
-
-## Performance
-
-Optimize inference without changing model outputs.
-
-### Completed
-
-- ✅ Reuse KV-cache buffers across decode steps (in-place present-tensor copy)
-- ✅ Optimize top-k / top-p sampling (select_nth + heap nucleus; avoid full-vocab sort)
-- ✅ CPU ORT session tuning (shared builder: intra/inter threads, graph opt, `RuntimeOptions` wiring)
-- ✅ Reduce remaining host allocations where measured (final-position logits copy; reusable logits scratch; drop per-step present-name / shape `Vec` allocs)
-- ✅ Reuse ONNX input tensors across decode steps where practical (`embed_into` for `(1,1,H)` step embeds; cached present KV names; prefill buffer released after first step)
-- ✅ Broader inference benchmarks (latency / tokens-per-second across presets via `examples/inference_bench.rs`)
-
-Session input `TensorRef` wrappers are still rebuilt each step (lifetime-bound to the ORT run); measured cost is dominated by ORT execution and the KV present→past memcpy, which already reuses buffer capacity.
-
----
-
-## Execution Providers
-
-Wire non-CPU ONNX Runtime execution providers through `RuntimeOptions` without
-changing model contracts.
-
-### Completed
-
-- ✅ CUDA EP registration and session wiring (`--features cuda`)
-- ✅ `KVCacheBackend` abstraction (`KVCache` / `CudaKVCache`) with a single
-  `generate_streaming` loop (see [`KV.md`](KV.md))
-- ✅ CUDA EP generate defaults to IoBinding `CudaKVCache`; escape hatch
-  `FAST_LIGHTONOCR_CUDA_HOST_KV`
-- ✅ Expose EP / thread options through Python `runtime_kwargs`
-- ✅ Packaging notes for GPU / accelerator runtimes (wheels stay CPU-default)
-
-### Planned work
-
-- CoreML EP (macOS / Apple Silicon)
-- DirectML EP (Windows)
-- CUDA follow-ons (non-blocking): vision/embed residency checks, IoBinding
-  object reuse across steps, batch>1 on `CudaKVCache` if needed
-
----
-
-# 📋 Planned Milestones
-
-## Packaging And Release Prep
-
-Prepare the crate for broader consumption.
-
-### Planned work
-
-- Public API review
-- Documentation polish
-- Release artifacts
-- Published examples
-
----
-
-# 🔬 Validation Strategy
-
-Each milestone should be independently testable.
-
-Whenever practical, correctness is verified against the official Python implementation.
-
-Validation includes:
-
-- ✅ Configuration error handling
-- ✅ Tokenizer parity
-- ✅ Image processor parity
-- ✅ ONNX stage tensor value comparison
-- 🚧 Prompt parity
-- 🚧 Generated token parity
-- 🚧 End-to-end OCR parity
-
-Regression tests are added throughout development to ensure future changes preserve correctness.
-
----
-
-# 💡 Future Enhancements
-
-Potential future work includes:
-
-- Batched inference
-- Multi-page document support
-- PDF support
-- Quantized model benchmarks
-- Additional LightOnOCR model variants
-- WebAssembly
-- Mobile deployment
+Batched and multi-page inference, PDF input, broader quantized benchmarks,
+WebAssembly, and mobile deployment remain possible follow-on work.

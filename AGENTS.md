@@ -28,10 +28,24 @@ Before modifying a subsystem, read its corresponding documentation.
 |----------|---------|
 | `ARCHITECTURE.md` | High-level system architecture |
 | `ROADMAP.md` | Development roadmap and milestones |
-| `MODEL_CONTRACTS.md` | ONNX model interfaces and tensor contracts |
+| `LIGHTONOCR2_MODEL_SPEC.md` | LightOnOCR-2 checkpoint and ONNX tensor contracts |
+| `LIGHTONOCR3_MODEL_SPEC.md` | LightOnOCR-3 model-family facts and pending ONNX contracts |
+| `docs/exec-plans/proposed/LIGHTONOCR3_SUPPORT.md` | Proposed staged LightOnOCR-3 execution plan |
 | `KV.md` | Decoder KV cache (host vs CUDA) and GPU decode plan |
 
 Avoid duplicating documentation across multiple files. High-level concepts belong in `ARCHITECTURE.md`, while subsystem-specific implementation details belong in their dedicated documents.
+
+## Execution Plans
+
+Store execution plans under `docs/exec-plans/` in a status subdirectory:
+
+- `proposed/` for plans awaiting implementation;
+- `active/` for plans currently being implemented;
+- `completed/` for plans whose work is finished.
+
+Name each plan file with an uppercase, descriptive slug, for example
+`LIGHTONOCR3_SUPPORT.md`. Move the plan between status directories as its
+status changes, and update documentation links when moving it.
 
 ---
 

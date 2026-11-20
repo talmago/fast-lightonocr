@@ -223,7 +223,11 @@ Fast LightOnOCR executes three ONNX models:
 
 Together they implement the complete multimodal inference pipeline.
 
-Detailed model interfaces, tensor shapes, dynamic dimensions, and ONNX contracts are documented in **[MODEL_CONTRACTS.md](MODEL_CONTRACTS.md)**.
+The current LightOnOCR-2 tensor contracts are documented in the
+[LightOnOCR-2 model spec](LIGHTONOCR2_MODEL_SPEC.md). LightOnOCR-3 checkpoint
+details and pending export contracts are in the
+[LightOnOCR-3 model spec](LIGHTONOCR3_MODEL_SPEC.md); its staged work is in the
+[implementation plan](exec-plans/proposed/LIGHTONOCR3_SUPPORT.md).
 
 ---
 
@@ -316,7 +320,7 @@ A typical application only needs to load a model and perform OCR.
 use fast_lightonocr::{LightOnOCR, LightOnOCROptions};
 
 let mut model = LightOnOCR::from_pretrained(
-    "models/lightonocr",
+    "models/LightOnOCR-2-1B-ONNX",
     LightOnOCROptions::default(),
 )?;
 
@@ -400,6 +404,8 @@ Although initially focused on LightOnOCR, the architecture should make it straig
 
 Additional implementation details are documented separately:
 
-- **[MODEL_CONTRACTS.md](MODEL_CONTRACTS.md)** — ONNX model interfaces, tensor shapes, and contracts.
+- **[LIGHTONOCR2_MODEL_SPEC.md](LIGHTONOCR2_MODEL_SPEC.md)** — LightOnOCR-2 model and ONNX contracts.
+- **[LIGHTONOCR3_MODEL_SPEC.md](LIGHTONOCR3_MODEL_SPEC.md)** — LightOnOCR-3 checkpoint facts and export contract discovery.
+- **[LIGHTONOCR3_SUPPORT.md](exec-plans/proposed/LIGHTONOCR3_SUPPORT.md)** — staged implementation work.
 - **[ROADMAP.md](ROADMAP.md)** — implementation milestones and future work.
 - **[AGENTS.md](../AGENTS.md)** — development guidelines for AI coding agents.
