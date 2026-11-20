@@ -178,7 +178,11 @@ fn apply_execution_provider(
     execution_provider: ExecutionProvider,
 ) -> Result<SessionBuilder> {
     match execution_provider {
-        ExecutionProvider::Cpu => Ok(builder),
+        ExecutionProvider::Cpu => builder
+            .with_auto_device(ort::session::builder::AutoDevicePolicy::Default)
+            .map_err(session_config_error)?
+            .with_execution_providers([ort::ep::CPU::default().build()])
+            .map_err(session_config_error),
         #[cfg(feature = "cuda")]
         ExecutionProvider::Cuda { device_id } => {
             let device_id =

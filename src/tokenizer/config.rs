@@ -39,9 +39,11 @@ pub struct TokenizerConfig {
     pub pad_token: String,
 
     /// Padding token type identifier.
+    #[serde(default)]
     pub pad_token_type_id: u32,
 
     /// Side on which tokenizer padding is applied.
+    #[serde(default)]
     pub padding_side: PaddingSide,
 
     /// Whether special tokens should be split during tokenization.
@@ -68,4 +70,10 @@ pub enum PaddingSide {
     /// Add padding after token content.
     #[serde(rename = "right")]
     Right,
+}
+
+impl Default for PaddingSide {
+    fn default() -> Self {
+        Self::Right
+    }
 }

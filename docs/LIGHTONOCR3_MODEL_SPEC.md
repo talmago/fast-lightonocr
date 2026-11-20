@@ -6,9 +6,32 @@ contracts needed for native Rust and Python support. It complements the
 work is tracked in the [LightOnOCR-3 implementation plan](exec-plans/proposed/LIGHTONOCR3_SUPPORT.md).
 
 > **Contract status:** checkpoint configs, processor/tokenizer assets, chat
-> templates, generation configs, and safetensor metadata have been inspected.
-> LightOnOCR-3 ONNX exports have not yet been produced, so graph-level tensor
-> contracts below remain open until export and inspection.
+> templates, generation configs, and safetensor metadata have been inspected
+> and their source revisions are pinned below. A local LightOnOCR-3-1B ONNX
+> export has also been inspected and checked against Transformers. Qwen3.5
+> graph contracts remain open until 0.8B and 4B exports are produced.
+
+## Pinned checkpoint revisions
+
+These revisions identify the source checkpoint snapshots inspected for Stage 2.
+They are provenance references, not ONNX export or parity fixtures.
+
+| Repository | Revision | Inspection scope |
+| --- | --- | --- |
+| `lightonai/LightOnOCR-3-1B` | `23d544085c886bbdace647bcfab91203299417e2` | Config, tokenizer, processor, template, generation config, safetensor metadata |
+| `lightonai/LightOnOCR-3-0.8B` | `36d8636925327c671bd8e479c517a004f7566bd9` | Config, tokenizer, processor, template, generation config, safetensor metadata |
+| `lightonai/LightOnOCR-3-4B` | `b71010f095dc3735de7ee6b9969bff8f8f50b39a` | Config, tokenizer, processor, template, generation config, safetensor metadata |
+| `onnx-community/LightOnOCR-2-1B-ONNX` | `2e2ecebebd69beaa3c38822c2927611eba811bd2` | Stage 1 ONNX compatibility baseline assets |
+
+The local LightOnOCR-2 baseline model is stored under the ignored
+`models/LightOnOCR-2-1B-ONNX/` directory. Its fixed image fixture is
+`tests/fixtures/lightonocr2_baseline.png`; opt-in Rust and Python wrapper
+smoke checks are available through `LIGHTONOCR_RUN_CHECKPOINT_REGRESSION=1
+cargo test --features load-dynamic --test inference` and
+`scripts/run_example.py` respectively. Both use the default
+preset and default prompt behavior. The known-answer OCR text/token IDs still
+need to be captured on a host with ONNX Runtime installed. Model files remain
+outside source control.
 
 ## Scope and model families
 
@@ -187,6 +210,66 @@ adapter remains necessary, and its ONNX filenames, numeric precision, and
 preprocessing must be read from its own export rather than inferred from
 LightOnOCR-2 architecture continuity.
 
+## LightOnOCR-3-1B ONNX export contract
+
+The pinned 3-1B checkpoint was exported locally with the standalone,
+architecture-generic [`scripts/export_onnx.py`](../scripts/export_onnx.py).
+Checkpoint metadata can be inspected independently with
+[`scripts/inspect_torch.py`](../scripts/inspect_torch.py), while
+[`scripts/inspect_onnx.py`](../scripts/inspect_onnx.py) inspects exported
+graphs. Export dependencies
+are pinned in [`scripts/requirements-lightonocr-export.txt`](../scripts/requirements-lightonocr-export.txt).
+The inspector and exporter classify checkpoints from their configuration and
+support the shared Qwen3/Pixtral full-attention architecture used by
+LightOnOCR-2-1B and LightOnOCR-3-1B; model version is recorded as provenance,
+not used to select an export implementation. The actual local export and
+parity run documented here used the LightOnOCR-3-1B checkpoint.
+ONNX files and `export_report.json` are generated under the ignored
+`models/LightOnOCR-3-1B-ONNX/` directory, with graphs and external data in its
+`onnx/` subdirectory. The exporter copies only `config.json`,
+`processor_config.json`, `generation_config.json`, `tokenizer_config.json`,
+`tokenizer.json`, and `chat_template.jinja`. The chat template is required for
+processor prompt rendering; `special_tokens_map.json` is redundant with the
+tokenizer assets. PyTorch safetensors and unrelated metadata are not copied.
+
+The export used Python 3.11.7, Transformers 5.5.4, PyTorch 2.6.0, ONNX 1.17.0,
+ONNX Runtime 1.20.1 CPU, opset 20, and float32 ONNX weights. Checkpoint weights
+are BF16 and were loaded as float32 for this export. The graphs use IR version
+9. The Transformers model was loaded with its `LightOnOcrForConditionalGeneration`
+class while retaining the checkpoint's top-level `mistral3` config; Transformers
+emits a wrapper/config-family warning for this supported class pairing.
+
+| Graph | Inputs | Outputs |
+| --- | --- | --- |
+| `vision_encoder.onnx` | `pixel_values` float32 `[batch, 3, height, width]` | `image_features` float32 `[batch, image_features, 1024]` |
+| `embed_tokens.onnx` | `input_ids` int64 `[batch, sequence]` | `inputs_embeds` float32 `[batch, sequence, 1024]` |
+| `decoder_model_merged.onnx` | `inputs_embeds` float32 `[batch, sequence, 1024]`, `attention_mask` int64 `[batch, total_sequence]`, and 56 float32 K/V tensors named `past_key_values.{0..27}.{key,value}` shaped `[batch, 8, past_sequence, 128]` | `logits` float32 `[batch, sequence, 151936]` and 56 float32 K/V tensors named `present.{0..27}.{key,value}` shaped `[batch, 8, total_sequence, 128]` |
+
+The exported decoder derives text positions from the past sequence length and
+has no separate position-ID input. The vision graph accepts the processor's
+NCHW pixel tensor and derives the Pixtral patch grid from its dynamic height
+and width; `image_sizes` is processor metadata, not a graph input. It fuses
+the Pixtral encoder with the LightOnOCR projection so the output is already in
+the decoder hidden space. This interface is close to the LightOnOCR-2 split,
+with the 3-1B tokenizer/config adapter still required.
+
+The 252×644 fixed fixture produces pixel values shaped `[1,3,252,644]` and
+input IDs shaped `[1,219]`, including 207 image placeholders. The image tensor
+SHA-256 is `bf03fdb3a986c099c8d43da9890edd2c9068d6b1f063aa2c04501c304597de9b`.
+The vision graph also passed parity at 280×700 (250 image features), checking
+that patch positions and merging generalize across height and width. ONNX
+Runtime results matched Transformers for vision features, embeddings, prefill,
+cached decode, and eight greedy generated tokens. The generated IDs were
+`[687, 77915, 220, 16, 15, 19, 17, 2303]`, decoding to `INVOICE 1042` plus
+trailing whitespace. Tolerances and full input token IDs are recorded in the
+local `export_report.json`.
+
+The decoder's external weights are in
+`onnx/decoder_model_merged.onnx.data`; vision and embedding weights are stored
+in their graph files. SHA-256 hashes for all four files are included in the
+generated export report. CPU was the only
+execution provider validated for this export.
+
 ## Repository baseline and design constraints
 
 The existing engine loads three ONNX sessions (vision encoder, token embedding,
@@ -225,16 +308,16 @@ Required design:
 
 The official LightOnOCR-3 model repositories currently expose Transformers
 checkpoints and processor/tokenizer files; no official ONNX assets were used
-for this inspection. Stage 1 can therefore be completed now using the existing
-LightOnOCR-2 ONNX repository. New-family end-to-end tests wait until local
-Qwen3.5 ONNX exports exist. For this planning inspection, the three
+for this export. Stage 1 can therefore be completed using the existing
+LightOnOCR-2 ONNX repository. Qwen3.5 end-to-end tests wait until local 0.8B
+and 4B exports exist. For the initial checkpoint inspection, the three
 `model.safetensors` files (about 1.71 GB, 2.01 GB, and 9.08 GB) plus the
 config/processor/tokenizer/template assets were downloaded from the Hugging
 Face `main` revisions on 2026-11-20 to
 `/private/tmp/lightonocr3-torch-inspection/`. Safetensors were inspected by
 metadata (key, shape and dtype) without materializing all weights or running
-inference. Pin commit SHAs for future parity/export runs; `main` is not a
-reproducible test reference.
+inference. Their commit SHAs are pinned above for reproducible parity/export
+runs; `main` is not a reproducible test reference.
 
 Before implementing the Qwen3.5 backend, export small, inspectable graphs and
 record for each model:
@@ -256,14 +339,12 @@ record for each model:
   prefill and decode against Transformers;
 - supported ORT execution providers and required custom operators, if any.
 
-The checkpoint configs were saved with Transformers 5.5.4 for Qwen3.5 and
-5.0.0.dev0 for 3-1B; the 0.8B model card requires Transformers 5.2 or newer
-for its Qwen3.5 classes. The current inspection environment has Transformers
-4.48.3, which is too old to serve as the Python parity/export reference for
-these checkpoints. Create a pinned, isolated reference environment matching
-the model's supported Transformers version before generating numerical
-processor/model outputs; do not upgrade the repository's runtime dependencies
-to satisfy this development-only reference path.
+The repository's default Python environment has Transformers 4.48.3, which is
+too old to load these checkpoints. The 3-1B export was therefore run in an
+isolated Python 3.11.7 environment pinned by
+`scripts/requirements-lightonocr-export.txt`; do not upgrade runtime
+dependencies to satisfy this development-only reference path. Use a separately
+pinned Transformers 5.x environment for Qwen3.5 numerical parity/export too.
 
 Export a tiny smoke-test model or use reduced test inputs first to validate
 operator support and session loading before spending time on full-size exports.

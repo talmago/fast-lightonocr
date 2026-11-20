@@ -6,14 +6,34 @@ the current LightOnOCR-2 ONNX contracts are documented in the
 [LightOnOCR-2 model spec](../../LIGHTONOCR2_MODEL_SPEC.md). The general project
 roadmap is in [ROADMAP.md](../../ROADMAP.md).
 
+## Execution status (2026-11-20)
+
+- Stage 1 setup is present: the LightOnOCR-2 checkpoint is downloaded under
+  `models/LightOnOCR-2-1B-ONNX` (ignored by git), a fixed image fixture and
+  opt-in Rust/Python wrapper checks are added, and its Hub revision is pinned.
+  The known-answer output has not been captured because ONNX Runtime is not
+  installed on this host; Stage 1's parity exit criterion remains open.
+- Stage 2 config, tokenizer, processor, template, generation-config, and
+  safetensor metadata findings are recorded with pinned source revisions in
+  `LIGHTONOCR3_MODEL_SPEC.md`. The 3-1B graph contracts are now inspected;
+  the 0.8B/4B Qwen3.5 graph signatures and state behavior remain open, so
+  Stage 2's all-family exit criterion is still pending.
+- Stage 3 export and verification is complete for LightOnOCR-3-1B. The
+  reproducible exporter and pinned requirements are in `scripts/`, with local
+  graphs and SHA-256 provenance in the ignored
+  `models/LightOnOCR-3-1B-ONNX/` directory. ONNX Runtime CPU parity passed for
+  vision features at two image sizes, token embeddings, prefill and cached
+  decode logits, and eight greedy output tokens. Contract details are in
+  `LIGHTONOCR3_MODEL_SPEC.md`; the next implementation stage is Stage 4.
+
 ## Acceptance matrix
 
 | Checkpoint | Rust load | Python local load | Python Hub load | Plain OCR parity | Grounding parity |
 | --- | --- | --- | --- | --- | --- |
 | LightOnOCR-2-1B ONNX | Stage 1 | Stage 1 | Preserve current behavior | Stage 1 | N/A |
-| LightOnOCR-3-1B ONNX | After its export | Required | Required | Required | Required |
-| LightOnOCR-3-0.8B ONNX | After Qwen3.5 backend/export | Required | Required | Required | Required |
-| LightOnOCR-3-4B ONNX | After Qwen3.5 backend/export | Required | Required | Required | Required |
+| LightOnOCR-3-1B ONNX | Stage 4 | Stage 6 | Stage 6 | Stage 4 | Stage 4 |
+| LightOnOCR-3-0.8B ONNX | Stage 5 | Stage 6 | Stage 6 | Stage 5 | Stage 5 |
+| LightOnOCR-3-4B ONNX | Stage 6 | Stage 6 | Stage 6 | Stage 6 | Stage 6 |
 
 For each supported checkpoint, verify config dispatch, tokenizer/template IDs,
 preprocessed image dimensions and values, vision output, prefill logits, one or
@@ -66,63 +86,79 @@ artifacts before model-family refactoring begins.
 **Exit criteria:** contracts and required assets are documented for each
 architecture, with parity fixtures or reference outputs identified.
 
-## Stage 3 — Add architecture-aware Rust loading and inference
+## Stage 3 — Export and verify LightOnOCR-3-1B
 
-- Introduce a small internal architecture selection layer based on
-  top-level `model_type` and `architectures` in `config.json`, retaining the
-  current implementation as the LightOnOCR-2 backend.
-- Add a LightOnOCR-3-1B compatibility adapter for its `mistral3` wrapper,
-  `image_token_id` field, tokenizer specials, and generation defaults; reuse
-  the LightOnOCR-2 vision/embedding/full-attention decoder path after parity
-  proves the contracts match.
-- Implement the Qwen3.5 backend against its exported ONNX contracts, including
-  family-specific config parsing, Qwen3VL image preprocessing and
-  chat-template rendering, multimodal positions, hybrid recurrent/KV state,
-  decoding, and stop-token handling.
-- Share only components whose contracts are demonstrably common; keep
-  architecture-specific tensor transformations explicit.
-- Keep the public `LightOnOCR` loader and result surface stable. Add public API
-  only if a user control cannot be derived from checkpoint configuration.
-- Validate config dispatch and each pipeline stage against the official
-  Python/reference implementation, then run end-to-end OCR parity for all
-  three LightOnOCR-3 sizes and the LightOnOCR-2 baseline.
+The checkpoint inspector and export command are architecture-generic:
+`scripts/inspect_torch.py` detects supported configurations and
+`scripts/export_onnx.py` exports the matching full-attention architecture.
+`scripts/inspect_onnx.py` remains dedicated to inspecting exported graphs.
+Each script runs independently; model version is recorded as provenance and
+does not select the export path.
 
-**Exit criteria:** supported checkpoints auto-select the correct backend and
-pass stage-level and end-to-end parity checks.
+- Create a pinned, isolated reference environment using a Transformers version
+  that supports the `mistral3` checkpoint, plus the required export/runtime
+  tooling. Keep these development dependencies out of the Rust runtime.
+- Add a reproducible export script or command for the 3-1B checkpoint at its
+  pinned source revision. Store ONNX graphs and external data in the `onnx/`
+  subdirectory of ignored local `models/LightOnOCR-3-1B-ONNX`; copy only the
+  model/processor/generation configs, tokenizer config/data, and required chat
+  template to the checkpoint root (excluding PyTorch safetensors).
+- Inspect graph filenames, opset/IR, input and output names, ordering, dtypes,
+  ranks, dynamic dimensions, and cache behavior. Confirm whether the graphs
+  match LightOnOCR-2's three-session Pixtral/full-attention contract.
+- Compare processor outputs, prompt/template IDs, vision output, prefill and
+  decode outputs, generated IDs, and decoded OCR text against the official
+  Transformers reference. Record export tool versions and SHA-256 hashes.
 
-## Stage 4 — Extend the Python wrapper and asset downloads
+**Exit criteria:** reproducible local 3-1B exports exist, their graph contract
+is documented, and reference parity outputs establish whether the existing
+Rust inference stages can be reused.
 
-- Preserve current `from_pretrained()` arguments and behavior for
-  LightOnOCR-2 repositories.
-- Ensure download patterns include each architecture's actual required
-  configuration, tokenizer, processor, and ONNX assets; do not infer filenames
-  from the existing LightOnOCR-2 presets when exports differ.
-- Keep preset selection compatible. Determine whether existing `default`,
-  `fp16`, and `q4` names apply per repository from available artifacts; report
-  unsupported combinations clearly rather than downloading incomplete
-  checkpoints.
-- Confirm local-directory loading and Hugging Face Hub loading both rely on
-  the same Rust checkpoint-config dispatch.
-- Document transcription and grounding prompts as model behavior without
-  changing the existing default OCR prompt/API.
+## Stage 4 — Add LightOnOCR-3-1B Rust compatibility
 
-**Exit criteria:** Python can load local and Hub checkpoints for every
-supported variant with no LightOnOCR-2 caller changes.
+- Add the smallest architecture selector/config adapter needed for the
+  `mistral3` wrapper, `image_token_id`, tokenizer specials, and generation
+  defaults. Keep the existing LightOnOCR-2 path unchanged.
+- Reuse the current vision, embedding, and full-attention decoder path only
+  for contracts confirmed by Stage 3 parity. Keep 3-1B-specific differences
+  explicit in configuration and preprocessing.
+- Preserve the public loader and result surface. Validate each pipeline stage
+  and end-to-end OCR against the Stage 3 reference fixtures.
 
-## Stage 5 — Export, package, and release the new ONNX models
+**Exit criteria:** Rust loads the local 3-1B export and passes stage-level and
+plain OCR parity alongside the LightOnOCR-2 baseline.
 
-- Add reproducible Torch-to-ONNX export scripts or documented export commands
-  for the Qwen3.5 variants, preserving source checkpoints and recording
-  exporter/runtime versions.
-- Save exports locally for development and regression runs; keep large model
-  artifacts out of source control unless repository policy establishes an
-  artifact store.
-- Validate exported graph parity against official Transformers outputs,
-  including higher-resolution inputs and grounding/chart examples.
-- Publish or consume versioned ONNX repositories, update Python download
-  patterns and examples, and benchmark latency/memory for CPU and supported
-  execution providers.
+## Stage 5 — Export LightOnOCR-3-0.8B and implement Qwen3.5
 
-**Exit criteria:** repeatable exports, documented asset provenance, parity
-coverage, and working package downloads exist for all supported LightOnOCR-3
-variants.
+- Export the pinned 0.8B checkpoint with the same reproducible, isolated
+  workflow. Keep ONNX data under ignored `models/LightOnOCR-3-0.8B-ONNX/`.
+- Inspect and document its actual vision, embedding, prefill, decode, image
+  packing, multimodal position, recurrent linear-attention state, and KV
+  cache graph contracts before choosing Rust tensor/state representations.
+- Compare preprocessing, prompt/template IDs, intermediate outputs, decode
+  steps, token IDs, plain OCR, and grounding against the official reference.
+- Implement architecture dispatch and the Qwen3.5 backend against those
+  observed contracts, including hybrid recurrent/KV state and stop handling.
+- Keep architecture-specific tensor transformations explicit and add shared
+  components only where graph and parity evidence show matching contracts.
+
+**Exit criteria:** Rust loads the local 0.8B export and passes stage-level,
+plain OCR, and grounding parity while preserving LightOnOCR-2 and 3-1B results.
+
+## Stage 6 — Extend model coverage and Python downloads
+
+- Export and inspect the pinned 4B Qwen3.5 checkpoint, then validate it with
+  the Stage 5 backend and add parity fixtures for plain OCR and grounding.
+- Preserve current Python `from_pretrained()` arguments and LightOnOCR-2
+  behavior. Derive download patterns from each export's actual assets and
+  report unsupported preset/model combinations clearly.
+- Confirm local and Hub loading use the same Rust config dispatch. Keep
+  `default`, `fp16`, and `q4` names compatible where the checkpoint supplies
+  those artifacts.
+- Save development exports locally and keep large model files out of git.
+  Publish or consume versioned ONNX repositories and benchmark CPU and
+  supported execution providers after parity passes.
+
+**Exit criteria:** all three LightOnOCR-3 sizes load through Rust and Python,
+pass stage-level and end-to-end parity, and have documented export provenance
+and working package downloads.

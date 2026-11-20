@@ -56,6 +56,7 @@ pub struct GenerationConfig {
     pub transformers_version: Option<String>,
 
     /// Whether Hugging Face remote code was trusted for generation.
+    #[serde(default)]
     pub trust_remote_code: bool,
 }
 
@@ -176,8 +177,7 @@ impl DecoderConfig {
     /// Loads decoder configuration from an explicit JSON file.
     ///
     /// The method reads `config.json`, extracts the decoder-related subset of
-    /// nested `text_config`, and copies top-level decoder inputs such as
-    /// `image_token_index`.
+    /// nested `text_config`, and copies the top-level image token identifier.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let envelope = load_json_file::<DecoderConfigEnvelope>(path)?;
         let mut config = envelope.text_config;
@@ -196,6 +196,7 @@ pub enum LayerType {
 
 #[derive(Debug, Deserialize)]
 struct DecoderConfigEnvelope {
+    #[serde(alias = "image_token_id")]
     image_token_index: i64,
     text_config: DecoderConfig,
 }

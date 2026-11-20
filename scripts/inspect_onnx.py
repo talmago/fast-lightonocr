@@ -15,7 +15,7 @@ This script downloads the ONNX models from Hugging Face and prints:
 
 Usage:
 
-    python inspect_models.py
+    python scripts/inspect_onnx.py
 """
 
 from __future__ import annotations

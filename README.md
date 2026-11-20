@@ -198,14 +198,20 @@ cargo fmt
 The inference example defaults to:
 
 - model directory: `models/LightOnOCR-2-1B-ONNX`
-- image: `examples/SROIE-receipt.jpeg`
+- image: `tests/fixtures/SROIE.png`
 - model preset: `default`
 
 ```bash
 cargo run --example inference
 ```
 
-Optional arguments are accepted in this order:
+The model directory can also be selected explicitly with named options:
+
+```bash
+cargo run --example inference -- --model-dir models/LightOnOCR-3-1B-ONNX
+```
+
+The legacy positional form is also supported:
 
 ```bash
 cargo run --example inference -- \
