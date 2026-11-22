@@ -9,7 +9,10 @@ work is tracked in the [LightOnOCR-3 implementation plan](exec-plans/proposed/LI
 > templates, generation configs, and safetensor metadata have been inspected
 > and their source revisions are pinned below. A local LightOnOCR-3-1B ONNX
 > export has also been inspected and checked against Transformers. Qwen3.5
-> graph contracts remain open until 0.8B and 4B exports are produced.
+> 0.8B graphs have been exported and checked against Transformers for vision,
+> embeddings, prefill logits, and one cached decode step. Dynamic vision-grid
+> generalization, end-to-end OCR/grounding parity, and Rust execution remain
+> open; 4B contracts remain open until its export is produced.
 
 ## Pinned checkpoint revisions
 
@@ -203,6 +206,61 @@ Do not deserialize these files directly into the current required-field
 behavior, preserve user overrides, and test each stop ID. The Transformers
 examples use `max_new_tokens=1024`, temperature 0.2, and thinking disabled;
 validate these reference settings rather than assuming universal defaults.
+
+## LightOnOCR-3-0.8B ONNX export contract
+
+The pinned 0.8B snapshot was exported by the Qwen3.5 branch of
+[`scripts/export_onnx.py`](../scripts/export_onnx.py), using the isolated
+environment in [`scripts/requirements-lightonocr-export.txt`](../scripts/requirements-lightonocr-export.txt).
+The local export and `export_report.json` are under the ignored
+`models/LightOnOCR-3-0.8B-ONNX/` directory. Export uses Transformers 5.5.4,
+PyTorch 2.6.0, ONNX 1.17.0, ONNX Runtime 1.32.0 CPU, opset 20, and float32
+graph weights loaded from BF16 checkpoint weights. The exported checkpoint
+revision is `36d8636925327c671bd8e479c517a004f7566bd9`.
+
+The fixed SROIE fixture produced `pixel_values` `[784,1536]` (flattened
+temporal/channel/patch values), `image_grid_thw` `[1,3]` with value `[1,28,28]`,
+210 prompt tokens, and 196 projected image features. The 196 image placeholder
+tokens match the Qwen vision merger output. `mm_token_type_ids` accompanies
+the text input and is used by Transformers to create three-axis multimodal
+position IDs. The Qwen template emits a vision-start/image/vision-end sequence;
+it does not use the Pixtral row-break token expansion.
+
+| Graph | Inputs | Outputs |
+| --- | --- | --- |
+| `vision_encoder.onnx` | `pixel_values` float32 `[num_patches,1536]` | `image_features` float32 `[num_image_features,1024]` |
+| `embed_tokens.onnx` | `input_ids` int64 `[batch,sequence]` | `inputs_embeds` float32 `[batch,sequence,1024]` |
+| `decoder_prefill.onnx` | `inputs_embeds` float32 `[batch,sequence,1024]`, `position_ids` int64 `[3,batch,sequence]`, `attention_mask` int64 `[batch,total_sequence]` | `logits` float32 `[batch,sequence,248320]`; 24 layer states |
+| `decoder_decode.onnx` | Same three inputs plus per-layer state tensors | `logits` and updated per-layer state tensors |
+
+Each decoder graph stores all external tensors—including the recurrent-state
+constants attached to ONNX `Constant` nodes—in its single `.onnx.data` file.
+The exporter compacts both initializer data and attribute-tensor sidecars after
+tracing, so a successful export leaves no per-constant sidecar files.
+
+Layers 0–2, 4–6, 8–10, 12–14, 16–18, and 20–22 each expose
+`conv_state` float32 `[batch,6144,4]` and `recurrent_state` float32
+`[batch,16,128,128]`. Layers 3, 7, 11, 15, 19, and 23 expose full-attention
+`key` and `value` tensors float32 `[batch,2,sequence,256]`. The prefill graph
+returns those same state types; decode consumes and returns all 48 state
+tensors. Position IDs are explicit graph inputs, with three axes (text/time,
+height, width); Rust must calculate their multimodal layout and advance them
+using the prompt's position delta during generation.
+
+The vision exporter replaces Transformers' Python-list grid helpers with
+tensor-based position interpolation and single-image packed attention. The
+resulting graph retains `image_grid_thw`. A second processor-produced 700×280
+image produced 792 patch rows with grid `[1,18,44]` and 198 image features;
+vision outputs matched Transformers at rtol/atol 2e-3. This establishes
+dynamic grid parity for the single-image OCR path exercised here, not for
+multiple images or videos.
+
+ONNX Runtime CPU matched Transformers for vision features at two image grids
+(rtol/atol 2e-3), embeddings (1e-5), prefill logits, and one cached decode
+step (3e-3).
+These stage checks do not yet establish generated-token, plain OCR, or
+grounding parity. Graph hashes and complete tensor signatures are in the
+local export report.
 
 LightOnOCR-3-1B can reuse the existing full-attention inference stages only
 after parity confirms matching tensor contracts. Its model wrapper/config

@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_MODEL_TYPES = {"lighton_ocr", "mistral3"}
+SUPPORTED_MODEL_TYPES = {"lighton_ocr", "mistral3", "qwen3_5"}
 
 def identify_architecture(config: dict[str, Any]) -> dict[str, Any]:
     """Validate and describe the shared Pixtral + Qwen3 OCR architecture."""
@@ -18,6 +18,35 @@ def identify_architecture(config: dict[str, Any]) -> dict[str, Any]:
     vision_config = config.get("vision_config") or {}
     text_model_type = str(text_config.get("model_type", "")).lower()
     vision_model_type = str(vision_config.get("model_type", "")).lower()
+    if model_type == "qwen3_5":
+        if "qwen35forconditionalgeneration" not in normalized_architectures:
+            raise ValueError(
+                "unsupported Qwen3.5 architecture in config.json: "
+                f"model_type={model_type!r}, architectures={architectures!r}"
+            )
+        if text_model_type != "qwen3_5_text" or vision_model_type != "qwen3_5":
+            raise ValueError(
+                "Qwen3.5 export expects qwen3_5_text and qwen3_5 sub-configs; "
+                f"got text={text_model_type!r}, vision={vision_model_type!r}"
+            )
+        layer_types = text_config.get("layer_types") or []
+        if not layer_types or any(
+            layer_type not in {"linear_attention", "full_attention"}
+            for layer_type in layer_types
+        ):
+            raise ValueError(
+                "Qwen3.5 config must declare linear/full layer types; "
+                f"found layer_types={layer_types!r}"
+            )
+        return {
+            "family": "qwen3_5_hybrid",
+            "model_type": model_type,
+            "architectures": architectures,
+            "text_model_type": text_model_type,
+            "vision_model_type": vision_model_type,
+            "layer_types": layer_types,
+            "transformers_version": config.get("transformers_version"),
+        }
     if (model_type not in SUPPORTED_MODEL_TYPES
             or "lightonocrforconditionalgeneration" not in normalized_architectures):
         raise ValueError(

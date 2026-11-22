@@ -6,7 +6,7 @@ the current LightOnOCR-2 ONNX contracts are documented in the
 [LightOnOCR-2 model spec](../../LIGHTONOCR2_MODEL_SPEC.md). The general project
 roadmap is in [ROADMAP.md](../../ROADMAP.md).
 
-## Execution status (2026-11-20)
+## Execution status (2026-11-21)
 
 - Stage 1 setup is present: the LightOnOCR-2 checkpoint is downloaded under
   `models/LightOnOCR-2-1B-ONNX` (ignored by git), a fixed image fixture and
@@ -25,6 +25,13 @@ roadmap is in [ROADMAP.md](../../ROADMAP.md).
   vision features at two image sizes, token embeddings, prefill and cached
   decode logits, and eight greedy output tokens. Contract details are in
   `LIGHTONOCR3_MODEL_SPEC.md`; the next implementation stage is Stage 4.
+- Stage 5 checkpoint inspection and initial 0.8B export are now present. The
+  existing inspector and exporter identify `qwen3_5`; the pinned export has
+  vision, embedding, prefill, and cached-decode graphs with recorded state
+  signatures and ONNX Runtime parity for those stages. Vision positional
+  interpolation was replaced with a tensor-based dynamic implementation and
+  passed parity at two image grids. Generated-token, OCR/grounding, and Rust
+  parity remain open. See the 0.8B contract in `LIGHTONOCR3_MODEL_SPEC.md`.
 
 ## Acceptance matrix
 

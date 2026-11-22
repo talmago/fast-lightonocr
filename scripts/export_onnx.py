@@ -11,7 +11,7 @@ from typing import Any
 import onnx
 
 EXPORT_OPSET = 20
-SUPPORTED_MODEL_TYPES = {"lighton_ocr", "mistral3"}
+SUPPORTED_MODEL_TYPES = {"lighton_ocr", "mistral3", "qwen3_5"}
 
 def identify_architecture(config: dict[str, Any]) -> dict[str, Any]:
     """Validate and describe the shared Pixtral + Qwen3 OCR architecture."""
@@ -22,6 +22,35 @@ def identify_architecture(config: dict[str, Any]) -> dict[str, Any]:
     vision_config = config.get("vision_config") or {}
     text_model_type = str(text_config.get("model_type", "")).lower()
     vision_model_type = str(vision_config.get("model_type", "")).lower()
+    if model_type == "qwen3_5":
+        if "qwen35forconditionalgeneration" not in normalized_architectures:
+            raise ValueError(
+                "unsupported Qwen3.5 architecture in config.json: "
+                f"model_type={model_type!r}, architectures={architectures!r}"
+            )
+        if text_model_type != "qwen3_5_text" or vision_model_type != "qwen3_5":
+            raise ValueError(
+                "Qwen3.5 export expects qwen3_5_text and qwen3_5 sub-configs; "
+                f"got text={text_model_type!r}, vision={vision_model_type!r}"
+            )
+        layer_types = text_config.get("layer_types") or []
+        if not layer_types or any(
+            layer_type not in {"linear_attention", "full_attention"}
+            for layer_type in layer_types
+        ):
+            raise ValueError(
+                "Qwen3.5 config must declare linear/full layer types; "
+                f"found layer_types={layer_types!r}"
+            )
+        return {
+            "family": "qwen3_5_hybrid",
+            "model_type": model_type,
+            "architectures": architectures,
+            "text_model_type": text_model_type,
+            "vision_model_type": vision_model_type,
+            "layer_types": layer_types,
+            "transformers_version": config.get("transformers_version"),
+        }
     if (model_type not in SUPPORTED_MODEL_TYPES
             or "lightonocrforconditionalgeneration" not in normalized_architectures):
         raise ValueError(
@@ -208,7 +237,7 @@ def _remove_previous_graph(path: Path) -> None:
         model = onnx.load(path, load_external_data=False)
         locations = {
             item.value
-            for tensor in model.graph.initializer
+            for tensor in _graph_tensors(model.graph)
             for item in tensor.external_data
             if item.key == "location"
         }
@@ -222,23 +251,56 @@ def _remove_previous_graph(path: Path) -> None:
         consolidated.unlink()
 
 
+def _graph_tensors(graph: Any):
+    """Yield initializer and attribute tensors, including nested subgraphs."""
+    yield from graph.initializer
+    for node in graph.node:
+        for attribute in node.attribute:
+            if attribute.type == onnx.AttributeProto.TENSOR:
+                yield attribute.t
+            elif attribute.type == onnx.AttributeProto.TENSORS:
+                yield from attribute.tensors
+            elif attribute.type == onnx.AttributeProto.GRAPH:
+                yield from _graph_tensors(attribute.g)
+            elif attribute.type == onnx.AttributeProto.GRAPHS:
+                for nested in attribute.graphs:
+                    yield from _graph_tensors(nested)
+
+
 def _consolidate_external_data(path: Path) -> None:
-    """Pack legacy PyTorch per-initializer sidecars into one graph data file."""
+    """Pack initializer and node-attribute sidecars into one graph data file."""
     model = onnx.load(path, load_external_data=False)
-    tensors = [tensor for tensor in model.graph.initializer if tensor.data_location == 1]
+    tensors = [tensor for tensor in _graph_tensors(model.graph)
+               if tensor.data_location == onnx.TensorProto.EXTERNAL]
     if not tensors:
         return
 
     data_path = Path(str(path) + ".data")
     source_paths: set[Path] = set()
-    with data_path.open("wb") as destination:
-        for tensor in tensors:
-            metadata = {item.key: item.value for item in tensor.external_data}
-            source = path.parent / metadata["location"]
-            source_paths.add(source)
+    pack_tensors = []
+    for tensor in tensors:
+        metadata = {item.key: item.value for item in tensor.external_data}
+        location = metadata.get("location")
+        if not location:
+            raise ValueError(f"external tensor {tensor.name!r} has no location in {path}")
+        source = path.parent / location
+        source_paths.add(source)
+        if source.resolve() != data_path.resolve():
+            pack_tensors.append((tensor, metadata, source))
+    if not pack_tensors:
+        return
+
+    # Keep the already consolidated initializer data in place, then append
+    # node-attribute constants and any remaining per-tensor sidecars.
+    mode = "ab" if data_path.is_file() else "wb"
+    with data_path.open(mode) as destination:
+        for tensor, metadata, source in pack_tensors:
+            if not source.is_file():
+                raise FileNotFoundError(f"ONNX external data file is missing: {source}")
             offset = int(metadata.get("offset", "0"))
-            remaining = int(metadata.get("length", str(source.stat().st_size - offset)))
+            length = int(metadata.get("length", str(source.stat().st_size - offset)))
             new_offset = destination.tell()
+            remaining = length
             with source.open("rb") as source_stream:
                 source_stream.seek(offset)
                 while remaining:
@@ -247,18 +309,26 @@ def _consolidate_external_data(path: Path) -> None:
                         raise IOError(f"truncated ONNX external data file: {source}")
                     destination.write(block)
                     remaining -= len(block)
-            tensor.ClearField("external_data")
-            tensor.raw_data = b""
+            del tensor.external_data[:]
             tensor.data_location = onnx.TensorProto.EXTERNAL
-            onnx.external_data_helper.set_external_data(
-                tensor, location=data_path.name,
-                offset=new_offset,
-                length=int(metadata.get("length", str(source.stat().st_size - offset))),
-            )
+            for key, value in (("location", data_path.name),
+                               ("offset", str(new_offset)),
+                               ("length", str(length))):
+                entry = tensor.external_data.add()
+                entry.key = key
+                entry.value = value
     onnx.save(model, path)
     for source in source_paths:
-        if source != data_path and source.is_file():
+        if source.resolve() != data_path.resolve() and source.is_file():
             source.unlink()
+
+
+def _clean_legacy_export_sidecars(onnx_dir: Path) -> None:
+    """Remove only temporary sidecars left by failed PyTorch ONNX exports."""
+    for pattern in ("onnx__*", "_layers*"):
+        for sidecar in onnx_dir.glob(pattern):
+            if sidecar.is_file():
+                sidecar.unlink()
 
 
 def _copy_checkpoint_assets(checkpoint_dir: Path, output_dir: Path) -> list[str]:
@@ -285,6 +355,480 @@ def _copy_checkpoint_assets(checkpoint_dir: Path, output_dir: Path) -> list[str]
     return copied
 
 
+def _export_qwen35(
+    checkpoint_dir: Path,
+    output_dir: Path,
+    image_path: Path,
+    inspection: dict[str, Any],
+) -> None:
+    """Export Qwen3.5 vision, embedding, prefill, and cached-decode graphs.
+
+    Qwen3.5 has two distinct decoder-state kinds. Linear-attention layers
+    expose convolution and recurrent state; full-attention layers expose K/V
+    cache. Prefill and decode are separate graphs because linear attention
+    takes a different path when recurrent state exists.
+    """
+    import torch
+    import numpy as np
+    from PIL import Image
+    from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
+    from transformers.cache_utils import DynamicCache
+    from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb_vision
+
+    class VisionGraph(torch.nn.Module):
+        def __init__(self, qwen_model: Any) -> None:
+            super().__init__()
+            self.visual = qwen_model.model.visual
+
+            # Transformers' reference helpers call grid_thw.tolist(), which
+            # specializes traced exports to the fixture dimensions. These
+            # tensor-only equivalents retain the grid values in ONNX.
+            def interpolate(grid_thw: torch.Tensor) -> torch.Tensor:
+                t, height, width = grid_thw[0, 0], grid_thw[0, 1], grid_thw[0, 2]
+                side = self.visual.num_grid_per_side
+                h = torch.arange(height, device=grid_thw.device, dtype=torch.float32)
+                w = torch.arange(width, device=grid_thw.device, dtype=torch.float32)
+                h_scale = (side - 1) / torch.clamp(height - 1, min=1)
+                w_scale = (side - 1) / torch.clamp(width - 1, min=1)
+                h_pos = h * h_scale
+                w_pos = w * w_scale
+                h0, w0 = h_pos.long(), w_pos.long()
+                h1 = (h0 + 1).clamp(max=side - 1)
+                w1 = (w0 + 1).clamp(max=side - 1)
+                dh, dw = h_pos - h0, w_pos - w0
+                base0, base1 = h0 * side, h1 * side
+                indices = torch.stack((
+                    (base0[:, None] + w0[None, :]).reshape(-1),
+                    (base0[:, None] + w1[None, :]).reshape(-1),
+                    (base1[:, None] + w0[None, :]).reshape(-1),
+                    (base1[:, None] + w1[None, :]).reshape(-1),
+                ))
+                weights = torch.stack((
+                    ((1 - dh)[:, None] * (1 - dw)[None, :]).reshape(-1),
+                    ((1 - dh)[:, None] * dw[None, :]).reshape(-1),
+                    (dh[:, None] * (1 - dw)[None, :]).reshape(-1),
+                    (dh[:, None] * dw[None, :]).reshape(-1),
+                ))
+                embedded = self.visual.pos_embed(indices).to(self.visual.pos_embed.weight.dtype)
+                interpolated = (embedded * weights[:, :, None]).sum(dim=0)
+                merge = self.visual.spatial_merge_size
+                interpolated = interpolated.reshape(
+                    1, height // merge, merge, width // merge, merge, -1
+                ).permute(0, 1, 3, 2, 4, 5).flatten(0, 4)
+                return interpolated
+
+            def rotary_positions(grid_thw: torch.Tensor) -> torch.Tensor:
+                _, height, width = grid_thw[0, 0], grid_thw[0, 1], grid_thw[0, 2]
+                max_hw = torch.maximum(height, width)
+                freq = self.visual.rotary_pos_emb(max_hw)
+                merge = self.visual.spatial_merge_size
+                mh = torch.arange(height // merge, device=grid_thw.device)
+                mw = torch.arange(width // merge, device=grid_thw.device)
+                intra = torch.arange(merge, device=grid_thw.device)
+                rows = (mh[:, None, None, None] * merge + intra[None, None, :, None])
+                cols = (mw[None, :, None, None] * merge + intra[None, None, None, :])
+                rows = rows.expand(height // merge, width // merge, merge, merge).reshape(-1)
+                cols = cols.expand(height // merge, width // merge, merge, merge).reshape(-1)
+                coords = torch.stack((rows, cols), dim=-1)
+                return freq[coords].flatten(1)
+
+            self.visual.fast_pos_embed_interpolate = interpolate
+            self.visual.rot_pos_emb = rotary_positions
+            for block in self.visual.blocks:
+                attention = block.attn
+                def packed_single_image_attention(
+                    hidden_states, cu_seqlens, rotary_pos_emb=None,
+                    position_embeddings=None, _attention=attention, **kwargs,
+                ):
+                    sequence_length = hidden_states.shape[0]
+                    query, key, value = (
+                        _attention.qkv(hidden_states)
+                        .reshape(sequence_length, 3, _attention.num_heads, -1)
+                        .permute(1, 0, 2, 3).unbind(0)
+                    )
+                    cos, sin = position_embeddings
+                    query, key = apply_rotary_pos_emb_vision(query, key, cos, sin)
+                    query = query.transpose(0, 1).unsqueeze(0)
+                    key = key.transpose(0, 1).unsqueeze(0)
+                    value = value.transpose(0, 1).unsqueeze(0)
+                    weights = torch.matmul(query, key.transpose(-2, -1)) * _attention.scaling
+                    weights = torch.softmax(weights, dim=-1, dtype=torch.float32).to(query.dtype)
+                    output = torch.matmul(weights, value)
+                    output = output.squeeze(0).transpose(0, 1).reshape(sequence_length, -1)
+                    return _attention.proj(output)
+                attention.forward = packed_single_image_attention
+
+        def forward(self, pixel_values: torch.Tensor,
+                    image_grid_thw: torch.Tensor) -> torch.Tensor:
+            return self.visual(pixel_values, grid_thw=image_grid_thw).pooler_output
+
+    class EmbeddingGraph(torch.nn.Module):
+        def __init__(self, qwen_model: Any) -> None:
+            super().__init__()
+            self.embed_tokens = qwen_model.model.language_model.embed_tokens
+
+        def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+            return self.embed_tokens(input_ids)
+
+    class DecoderGraph(torch.nn.Module):
+        def __init__(self, qwen_model: Any, decode: bool) -> None:
+            super().__init__()
+            self.language_model = qwen_model.model.language_model
+            self.lm_head = qwen_model.lm_head
+            self.config = self.language_model.config
+            self.layer_types = list(self.config.layer_types)
+            self.decode = decode
+
+        def forward(self, inputs_embeds: torch.Tensor,
+                    position_ids: torch.Tensor,
+                    attention_mask: torch.Tensor,
+                    *states: torch.Tensor) -> tuple[torch.Tensor, ...]:
+            cache = DynamicCache(config=self.config)
+            if self.decode:
+                cursor = 0
+                for index, kind in enumerate(self.layer_types):
+                    layer = cache.layers[index]
+                    if kind == "linear_attention":
+                        if self.decode:
+                            layer.conv_states = states[cursor]
+                            layer.recurrent_states = states[cursor + 1]
+                            layer.is_conv_states_initialized = True
+                            layer.is_recurrent_states_initialized = True
+                            layer.has_previous_state = True
+                        cursor += 2
+                    else:
+                        layer.keys = states[cursor]
+                        layer.values = states[cursor + 1]
+                        layer.is_initialized = True
+                        cursor += 2
+            # Transformers' cache layer mutates state buffers with copy_(),
+            # which the legacy ONNX exporter cannot lower. Reassigning the
+            # tensor preserves the same recurrence and exposes state outputs.
+            for index, kind in enumerate(self.layer_types):
+                if kind == "linear_attention":
+                    layer = cache.layers[index]
+                    layer.update_conv_state = (
+                        lambda value, _layer=layer, **kwargs: setattr(_layer, "conv_states", value) or value
+                    )
+                    layer.update_recurrent_state = (
+                        lambda value, _layer=layer, **kwargs: setattr(_layer, "recurrent_states", value) or value
+                    )
+                    if self.decode:
+                        attention = self.language_model.layers[index].linear_attn
+                        def functional_conv_update(hidden_states, conv_state, weight, bias=None,
+                                                   activation=None, _layer=layer):
+                            state_length = conv_state.shape[-1]
+                            sequence_length = hidden_states.shape[-1]
+                            joined = torch.cat((conv_state, hidden_states), dim=-1).to(weight.dtype)
+                            _layer.conv_states = joined[:, :, -state_length:]
+                            convolved = torch.nn.functional.conv1d(
+                                joined, weight.unsqueeze(1), bias, padding=0,
+                                groups=hidden_states.shape[1],
+                            )
+                            return torch.nn.functional.silu(
+                                convolved[:, :, -sequence_length:]
+                            ).to(hidden_states.dtype)
+                        attention.causal_conv1d_update = functional_conv_update
+            hidden_states = inputs_embeds
+            position_embeddings = self.language_model.rotary_emb(
+                hidden_states, position_ids
+            )
+            past_length = cache.get_seq_length()
+            current_length = inputs_embeds.shape[1]
+            key_positions = torch.arange(
+                past_length + current_length, device=inputs_embeds.device
+            )
+            query_positions = torch.arange(
+                past_length, past_length + current_length,
+                device=inputs_embeds.device,
+            )
+            allowed = key_positions.unsqueeze(0) <= query_positions.unsqueeze(1)
+            allowed = allowed.unsqueeze(0).unsqueeze(0)
+            allowed = allowed & attention_mask[:, None, None, :].bool()
+            causal_mask = torch.zeros(
+                allowed.shape, dtype=hidden_states.dtype, device=hidden_states.device
+            ).masked_fill(~allowed, torch.finfo(hidden_states.dtype).min)
+            for index, layer in enumerate(self.language_model.layers):
+                layer_mask = None if self.layer_types[index] == "linear_attention" else causal_mask
+                hidden_states = layer(
+                    hidden_states,
+                    position_embeddings=position_embeddings,
+                    attention_mask=layer_mask,
+                    past_key_values=cache,
+                )
+            hidden_states = self.language_model.norm(hidden_states)
+            logits = self.lm_head(hidden_states)
+            flattened: list[torch.Tensor] = [logits]
+            for index, kind in enumerate(self.layer_types):
+                layer = cache.layers[index]
+                if kind == "linear_attention":
+                    flattened.extend((layer.conv_states, layer.recurrent_states))
+                else:
+                    flattened.extend((layer.keys, layer.values))
+            return tuple(flattened)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    onnx_dir = output_dir / "onnx"
+    onnx_dir.mkdir(parents=True, exist_ok=True)
+    _clean_legacy_export_sidecars(onnx_dir)
+    graph_paths = {
+        "vision": onnx_dir / "vision_encoder.onnx",
+        "embedding": onnx_dir / "embed_tokens.onnx",
+        "prefill": onnx_dir / "decoder_prefill.onnx",
+        "decode": onnx_dir / "decoder_decode.onnx",
+    }
+    for path in graph_paths.values():
+        _remove_previous_graph(path)
+
+    processor = AutoProcessor.from_pretrained(
+        str(checkpoint_dir), local_files_only=True
+    )
+    model = Qwen3_5ForConditionalGeneration.from_pretrained(
+        str(checkpoint_dir), torch_dtype=torch.float32, low_cpu_mem_usage=True,
+        local_files_only=True, attn_implementation="eager",
+    ).eval()
+    image = Image.open(image_path).convert("RGB")
+    inputs = processor.apply_chat_template(
+        [{"role": "user", "content": [{"type": "image", "image": image}]}],
+        add_generation_prompt=True, tokenize=True, return_dict=True,
+        return_tensors="pt",
+    )
+    input_ids = inputs["input_ids"]
+    pixel_values = inputs["pixel_values"]
+    grid = inputs["image_grid_thw"]
+    attention_mask = inputs["attention_mask"]
+    mm_token_type_ids = inputs["mm_token_type_ids"]
+    layer_types = list(model.config.text_config.layer_types)
+    decode_state_inputs: list[torch.Tensor] = []
+    with torch.inference_mode():
+        inputs_embeds = model.get_input_embeddings()(input_ids)
+        positions = model.model.compute_3d_position_ids(
+            input_ids=input_ids, inputs_embeds=inputs_embeds,
+            image_grid_thw=grid, attention_mask=attention_mask,
+            mm_token_type_ids=mm_token_type_ids,
+        )
+        vision_reference = model.model.get_image_features(
+            pixel_values, image_grid_thw=grid, return_dict=True
+        ).pooler_output[0].unsqueeze(0)
+        reference = model(
+            **inputs, use_cache=True, logits_to_keep=1, return_dict=True
+        )
+        decode_attention = torch.ones((1, input_ids.shape[1] + 1), dtype=torch.long)
+        decode_positions = model.model.compute_3d_position_ids(
+            input_ids=None,
+            inputs_embeds=model.get_input_embeddings()(input_ids[:, -1:]),
+            attention_mask=decode_attention,
+            past_key_values=reference.past_key_values,
+        )[:, :, -1:]
+        decode_state_inputs = []
+        for index, kind in enumerate(layer_types):
+            layer = reference.past_key_values.layers[index]
+            if kind == "linear_attention":
+                decode_state_inputs.extend((layer.conv_states, layer.recurrent_states))
+            else:
+                decode_state_inputs.extend((layer.keys, layer.values))
+    image_token_id = int(model.config.image_token_id)
+    if int((input_ids == image_token_id).sum()) != vision_reference.shape[1]:
+        raise RuntimeError("Qwen3.5 processor image-token count differs from vision features")
+
+    vision = VisionGraph(model).eval()
+    embedding = EmbeddingGraph(model).eval()
+    prefill = DecoderGraph(model, decode=False).eval()
+    decode = DecoderGraph(model, decode=True).eval()
+    prefill_outputs = ["logits"]
+    decode_state_names: list[str] = []
+    state_dynamic_axes: dict[str, dict[int, str]] = {}
+    for i, kind in enumerate(layer_types):
+        if kind == "linear_attention":
+            names = (f"conv_state.{i}", f"recurrent_state.{i}")
+            conv_dim = model.config.text_config.linear_num_key_heads * (
+                2 * model.config.text_config.linear_key_head_dim
+                + model.config.text_config.linear_value_head_dim
+            )
+            decode_state_inputs.extend((
+                torch.zeros((1, conv_dim, model.config.text_config.linear_conv_kernel_dim)),
+                torch.zeros((1,
+                    model.config.text_config.linear_num_value_heads,
+                    model.config.text_config.linear_key_head_dim,
+                    model.config.text_config.linear_value_head_dim)),
+            ))
+            state_dynamic_axes[names[0]] = {0: "batch_size"}
+            state_dynamic_axes[names[1]] = {0: "batch_size"}
+        else:
+            names = (f"past_key.{i}", f"past_value.{i}")
+            decode_state_inputs.extend((
+                torch.zeros((1, model.config.text_config.num_key_value_heads, 0,
+                             model.config.text_config.head_dim)),
+                torch.zeros((1, model.config.text_config.num_key_value_heads, 0,
+                             model.config.text_config.head_dim)),
+            ))
+            state_dynamic_axes[names[0]] = {0: "batch_size", 2: "past_sequence_length"}
+            state_dynamic_axes[names[1]] = {0: "batch_size", 2: "past_sequence_length"}
+        decode_state_names.extend(names)
+        prefill_outputs.extend((f"state.{i}.0", f"state.{i}.1"))
+    decode_outputs = ["logits", *[f"state.{i}.{j}"
+                                    for i in range(len(layer_types))
+                                    for j in range(2)]]
+    with torch.inference_mode():
+        prefill_reference = prefill(inputs_embeds, positions, attention_mask)
+    decode_state_inputs = [state.detach().clone() for state in decode_state_inputs]
+    next_id = reference.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+    next_embedding = model.get_input_embeddings()(next_id)
+    with torch.no_grad():
+        decode_reference = decode(
+            next_embedding, decode_positions, decode_attention, *decode_state_inputs
+        )
+
+    options = {"opset_version": EXPORT_OPSET, "dynamo": False,
+               "external_data": True, "do_constant_folding": True}
+    torch.onnx.export(
+        vision, (pixel_values, grid), str(graph_paths["vision"]),
+        input_names=["pixel_values", "image_grid_thw"],
+        output_names=["image_features"],
+        dynamic_axes={"pixel_values": {0: "num_patches"},
+                      "image_grid_thw": {0: "num_images"},
+                      "image_features": {0: "num_image_features"}}, **options,
+    )
+    torch.onnx.export(
+        embedding, (input_ids,), str(graph_paths["embedding"]),
+        input_names=["input_ids"], output_names=["inputs_embeds"],
+        dynamic_axes={"input_ids": {0: "batch_size", 1: "sequence_length"},
+                      "inputs_embeds": {0: "batch_size", 1: "sequence_length"}}, **options,
+    )
+    common_dynamic = {
+        "inputs_embeds": {0: "batch_size", 1: "sequence_length"},
+        "position_ids": {1: "batch_size", 2: "sequence_length"},
+        "attention_mask": {0: "batch_size", 1: "total_sequence_length"},
+        "logits": {0: "batch_size", 1: "sequence_length"},
+    }
+    prefill_dynamic = dict(common_dynamic)
+    decode_dynamic = dict(common_dynamic)
+    decode_dynamic.update(state_dynamic_axes)
+    for i, kind in enumerate(layer_types):
+        if kind == "linear_attention":
+            prefill_dynamic[f"state.{i}.0"] = {0: "batch_size"}
+            prefill_dynamic[f"state.{i}.1"] = {0: "batch_size"}
+            decode_dynamic[f"state.{i}.0"] = {0: "batch_size"}
+            decode_dynamic[f"state.{i}.1"] = {0: "batch_size"}
+        else:
+            prefill_dynamic[f"state.{i}.0"] = {0: "batch_size", 2: "total_sequence_length"}
+            prefill_dynamic[f"state.{i}.1"] = {0: "batch_size", 2: "total_sequence_length"}
+            decode_dynamic[f"state.{i}.0"] = {0: "batch_size", 2: "total_sequence_length"}
+            decode_dynamic[f"state.{i}.1"] = {0: "batch_size", 2: "total_sequence_length"}
+    torch.onnx.export(
+        prefill, (inputs_embeds, positions, attention_mask), str(graph_paths["prefill"]),
+        input_names=["inputs_embeds", "position_ids", "attention_mask"],
+        output_names=prefill_outputs, dynamic_axes=prefill_dynamic, **options,
+    )
+    torch.onnx.export(
+        decode,
+        (model.get_input_embeddings()(input_ids[:, -1:]), decode_positions,
+         decode_attention, *decode_state_inputs),
+        str(graph_paths["decode"]),
+        input_names=["inputs_embeds", "position_ids", "attention_mask", *decode_state_names],
+        output_names=decode_outputs, dynamic_axes=decode_dynamic, **options,
+    )
+    for path in graph_paths.values():
+        _consolidate_external_data(path)
+
+    import onnxruntime as ort
+    sessions = {name: ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+                for name, path in graph_paths.items()}
+    vision_feed = {"pixel_values": pixel_values.numpy()}
+    if any(value.name == "image_grid_thw" for value in sessions["vision"].get_inputs()):
+        vision_feed["image_grid_thw"] = grid.numpy()
+    ort_features = sessions["vision"].run(["image_features"], vision_feed)[0]
+    np.testing.assert_allclose(ort_features, vision_reference[0].numpy(), rtol=2e-3, atol=2e-3)
+    alternate_inputs = processor.apply_chat_template(
+        [{"role": "user", "content": [{"type": "image", "image": image.resize((700, 280))}]}],
+        add_generation_prompt=True, tokenize=True, return_dict=True,
+        return_tensors="pt",
+    )
+    with torch.inference_mode():
+        alternate_reference = model.model.get_image_features(
+            alternate_inputs["pixel_values"],
+            image_grid_thw=alternate_inputs["image_grid_thw"],
+            return_dict=True,
+        ).pooler_output[0].unsqueeze(0)
+    alternate_feed = {
+        "pixel_values": alternate_inputs["pixel_values"].numpy(),
+        "image_grid_thw": alternate_inputs["image_grid_thw"].numpy(),
+    }
+    ort_alternate = sessions["vision"].run(["image_features"], alternate_feed)[0]
+    np.testing.assert_allclose(ort_alternate, alternate_reference[0].numpy(),
+                               rtol=2e-3, atol=2e-3)
+    ort_embeds = sessions["embedding"].run(["inputs_embeds"],
+                                             {"input_ids": input_ids.numpy()})[0]
+    np.testing.assert_allclose(ort_embeds, inputs_embeds.numpy(), rtol=1e-5, atol=1e-5)
+    prefill_feed = {
+        "inputs_embeds": inputs_embeds.numpy(),
+        "position_ids": positions.numpy(),
+        "attention_mask": attention_mask.numpy(),
+    }
+    ort_prefill = sessions["prefill"].run(None, prefill_feed)
+    np.testing.assert_allclose(ort_prefill[0], prefill_reference[0].numpy(),
+                               rtol=3e-3, atol=3e-3)
+    decode_feed = {
+        "inputs_embeds": next_embedding.detach().numpy(),
+        "position_ids": decode_positions.numpy(),
+        "attention_mask": decode_attention.numpy(),
+        **{name: value.numpy() for name, value in zip(decode_state_names, decode_state_inputs)},
+    }
+    ort_decode = sessions["decode"].run(None, decode_feed)
+    np.testing.assert_allclose(ort_decode[0], decode_reference[0].detach().numpy(),
+                               rtol=3e-3, atol=3e-3)
+    # Report graph signatures and probe values. The Rust runtime consumes the
+    # explicit four-axis position IDs and the exported hybrid state tensors.
+    graph_reports = [inspect_onnx(path) for path in graph_paths.values()]
+    for report, path in zip(graph_reports, graph_paths.values()):
+        report["file"] = str(path.relative_to(output_dir))
+    copied_assets = _copy_checkpoint_assets(checkpoint_dir, output_dir)
+    report = {
+        "source_model": inspection["model_name"],
+        "source_revision": inspection["revision"],
+        "architecture": inspection["architecture"],
+        "transformers_version": __import__("transformers").__version__,
+        "torch_version": torch.__version__, "onnx_version": onnx.__version__,
+        "onnxruntime_version": ort.__version__, "opset": EXPORT_OPSET,
+        "precision": "float32",
+        "processor_inputs": {name: {"shape": list(value.shape), "dtype": str(value.dtype)}
+                             for name, value in inputs.items()},
+        "dynamic_vision_probe": {
+            "pixel_values_shape": list(alternate_inputs["pixel_values"].shape),
+            "image_grid_thw": alternate_inputs["image_grid_thw"].tolist(),
+            "image_features_shape": list(ort_alternate.shape),
+        },
+        "processor_token_ids": input_ids[0].tolist(),
+        "dimensions": {"hidden_size": model.config.text_config.hidden_size,
+                       "vocab_size": model.config.text_config.vocab_size,
+                       "layer_types": layer_types,
+                       "image_token_id": image_token_id},
+        "state_contract": [
+            {"layer": i, "kind": kind,
+             "tensors": (["conv_state", "recurrent_state"] if kind == "linear_attention"
+                         else ["key", "value"])}
+            for i, kind in enumerate(layer_types)
+        ],
+        "parity": {"vision_features": "passed (rtol=2e-3, atol=2e-3)",
+                   "vision_dynamic_grid": "passed (alternate 700x280 image; rtol=2e-3, atol=2e-3)",
+                   "token_embeddings": "passed (rtol=1e-5, atol=1e-5)",
+                   "prefill_logits": "passed (rtol=3e-3, atol=3e-3)",
+                   "cached_decode_logits": "passed (rtol=3e-3, atol=3e-3)"},
+        "graphs": graph_reports,
+    }
+    report["sha256"] = {}
+    for path in graph_paths.values():
+        rel = str(path.relative_to(output_dir))
+        report["sha256"][rel] = _file_sha256(path)
+        external = Path(str(path) + ".data")
+        if external.is_file():
+            report["sha256"][str(external.relative_to(output_dir))] = _file_sha256(external)
+    for asset in copied_assets:
+        report["sha256"][asset] = _file_sha256(output_dir / asset)
+    (output_dir / "export_report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(f"\nExport and parity report: {output_dir / 'export_report.json'}")
+
+
 def export_onnx(
     checkpoint_dir: Path,
     output_dir: Path,
@@ -292,6 +836,9 @@ def export_onnx(
     inspection: dict[str, Any],
 ) -> None:
     """Export a supported LightOnOCR full-attention checkpoint to ONNX."""
+    if inspection["architecture"]["family"] == "qwen3_5_hybrid":
+        _export_qwen35(checkpoint_dir, output_dir, image_path, inspection)
+        return
     import torch
     import numpy as np
     from PIL import Image
