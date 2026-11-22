@@ -99,6 +99,18 @@ from `generation_config.json`. CPU session tuning (intra/inter-op threads,
 parallel execution) is configured via `RuntimeOptions` on
 `LightOnOCROptions::runtime`.
 
+### Supported models
+
+`LightOnOCR::from_pretrained` selects the inference path from `config.json`.
+The same API works for every model below:
+
+| Model | Architecture |
+| --- | --- |
+| LightOnOCR-2-1B | Pixtral |
+| LightOnOCR-3-1B | Pixtral |
+| LightOnOCR-3-0.8B | Qwen |
+| LightOnOCR-3-4B | Qwen |
+
 ### Python
 
 The Python bindings wrap the same native Rust engine and can automatically

@@ -14,11 +14,14 @@ mod generation;
 mod kv_cache;
 mod logits;
 mod output;
+mod qwen;
 
 pub use attention::AttentionMask;
 pub use config::{DecoderConfig, GenerationConfig, LayerType};
-pub use decoder::Decoder;
+pub use decoder::PixtralDecoder;
 pub use generation::{FinishReason, GenerationOutput};
 pub use kv_cache::{KVCache, LayerCache};
 pub use logits::Logits;
 pub use output::DecoderOutput;
+pub(crate) use qwen::QwenPromptState;
+pub use qwen::{QwenDecoder, QwenLayerType};

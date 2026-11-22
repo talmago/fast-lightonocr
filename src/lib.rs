@@ -12,11 +12,13 @@ pub mod tokenizer;
 pub mod util;
 
 pub use model::{
-    Decoder, EmbeddingModel, ExecutionProvider, FinishReason, GenerationConfig, ImageTensor,
-    LightOnOCR, LightOnOCROptions, OCRResult, RuntimeOptions, StageTimings, VisionEncoder,
+    EmbeddingModel, ExecutionProvider, FinishReason, GenerationConfig, ImageTensor,
+    InferenceArchitecture, InferenceBackend, LightOnOCR, LightOnOCROptions, OCRResult,
+    PixtralDecoder, PixtralVisionEncoder, QwenDecoder, QwenVisionEncoder, RuntimeOptions,
+    StageTimings,
 };
 
-pub use processor::{ImageProcessor, ImageProcessorConfig, Processor};
+pub use processor::{ImageProcessor, ImageProcessorConfig, PixtralProcessor, QwenProcessor};
 
 pub use tokenizer::Tokenizer;
 pub use util::{Error, Result};

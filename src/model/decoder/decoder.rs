@@ -38,12 +38,12 @@ pub(crate) enum LogitsSelection {
 
 /// ONNX Runtime wrapper for the exported LightOnOCR decoder.
 ///
-/// `Decoder` owns the decoder model together with the runtime state required
+/// `PixtralDecoder` owns the decoder model together with the runtime state required
 /// for autoregressive generation. It executes the decoder ONNX graph,
 /// maintains the KV-cache across decoding steps, and generates output tokens
 /// according to the configured generation strategy.
 #[derive(Debug)]
-pub struct Decoder {
+pub struct PixtralDecoder {
     session: Session,
     config: DecoderConfig,
     generation_config: GenerationConfig,
@@ -57,7 +57,7 @@ pub struct Decoder {
     rng: fastrand::Rng,
 }
 
-impl Decoder {
+impl PixtralDecoder {
     /// Loads a decoder from an explicit ONNX model path.
     ///
     /// The decoder configuration (`config.json`) and generation configuration

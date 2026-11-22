@@ -70,7 +70,7 @@ impl Message {
 ///
 /// The text processor owns the model tokenizer and is responsible for
 /// rendering the chat template and tokenizing the prompt. Image placeholder
-/// expansion is driven by the high-level [`Processor`](crate::processor::Processor),
+/// expansion is driven by the high-level [`PixtralProcessor`](crate::processor::PixtralProcessor),
 /// after image preprocessing has produced the corresponding vision grid.
 #[derive(Debug, Clone)]
 pub struct TextProcessor {

@@ -6,15 +6,22 @@ import hashlib
 import json
 import shutil
 from collections import Counter
+from enum import Enum
 from pathlib import Path
 from typing import Any
 import onnx
 
 EXPORT_OPSET = 20
-SUPPORTED_MODEL_TYPES = {"lighton_ocr", "mistral3", "qwen3_5"}
+
+class InferenceArchitecture(str, Enum):
+    """Inference paths supported by the Rust runtime."""
+
+    PIXTRAL = "pixtral"
+    QWEN = "qwen"
+
 
 def identify_architecture(config: dict[str, Any]) -> dict[str, Any]:
-    """Validate and describe the shared Pixtral + Qwen3 OCR architecture."""
+    """Validate a checkpoint and classify it as Pixtral or Qwen."""
     model_type = str(config.get("model_type", "")).lower()
     architectures = [str(value) for value in config.get("architectures", [])]
     normalized_architectures = {value.lower().replace("_", "") for value in architectures}
@@ -22,60 +29,53 @@ def identify_architecture(config: dict[str, Any]) -> dict[str, Any]:
     vision_config = config.get("vision_config") or {}
     text_model_type = str(text_config.get("model_type", "")).lower()
     vision_model_type = str(vision_config.get("model_type", "")).lower()
-    if model_type == "qwen3_5":
-        if "qwen35forconditionalgeneration" not in normalized_architectures:
+
+    if (
+        model_type in {"lighton_ocr", "mistral3"}
+        and "lightonocrforconditionalgeneration" in normalized_architectures
+        and text_model_type == "qwen3"
+        and vision_model_type == "pixtral"
+    ):
+        layer_types = text_config.get("layer_types") or []
+        if any(layer_type != "full_attention" for layer_type in layer_types):
             raise ValueError(
-                "unsupported Qwen3.5 architecture in config.json: "
-                f"model_type={model_type!r}, architectures={architectures!r}"
+                "Pixtral checkpoints must use full-attention decoder layers; "
+                f"found layer_types={layer_types!r}"
             )
-        if text_model_type != "qwen3_5_text" or vision_model_type != "qwen3_5":
-            raise ValueError(
-                "Qwen3.5 export expects qwen3_5_text and qwen3_5 sub-configs; "
-                f"got text={text_model_type!r}, vision={vision_model_type!r}"
-            )
+        architecture = InferenceArchitecture.PIXTRAL
+    elif (
+        model_type == "qwen3_5"
+        and "qwen35forconditionalgeneration" in normalized_architectures
+        and text_model_type == "qwen3_5_text"
+        and vision_model_type == "qwen3_5"
+    ):
         layer_types = text_config.get("layer_types") or []
         if not layer_types or any(
             layer_type not in {"linear_attention", "full_attention"}
             for layer_type in layer_types
         ):
             raise ValueError(
-                "Qwen3.5 config must declare linear/full layer types; "
+                "Qwen checkpoints must declare linear/full attention layers; "
                 f"found layer_types={layer_types!r}"
             )
-        return {
-            "family": "qwen3_5_hybrid",
-            "model_type": model_type,
-            "architectures": architectures,
-            "text_model_type": text_model_type,
-            "vision_model_type": vision_model_type,
-            "layer_types": layer_types,
-            "transformers_version": config.get("transformers_version"),
-        }
-    if (model_type not in SUPPORTED_MODEL_TYPES
-            or "lightonocrforconditionalgeneration" not in normalized_architectures):
+        architecture = InferenceArchitecture.QWEN
+    else:
         raise ValueError(
             "unsupported LightOnOCR architecture in config.json: "
-            f"model_type={model_type!r}, architectures={architectures!r}"
+            f"model_type={model_type!r}, architectures={architectures!r}, "
+            f"text={text_model_type!r}, vision={vision_model_type!r}"
         )
-    if text_model_type != "qwen3" or vision_model_type != "pixtral":
-        raise ValueError(
-            "export currently supports the shared Qwen3/Pixtral LightOnOCR "
-            f"architecture; got text={text_model_type!r}, vision={vision_model_type!r}"
-        )
-    layer_types = text_config.get("layer_types") or []
-    if layer_types and any(layer_type != "full_attention" for layer_type in layer_types):
-        raise ValueError(
-            "export supports full-attention decoder layers only; "
-            f"found layer_types={layer_types!r}"
-        )
+
     return {
-        "family": "lightonocr_pixtral_qwen3_full_attention",
+        "inference_architecture": architecture.value,
         "model_type": model_type,
         "architectures": architectures,
         "text_model_type": text_model_type,
         "vision_model_type": vision_model_type,
+        "layer_types": layer_types,
         "transformers_version": config.get("transformers_version"),
     }
+
 
 
 def detect_checkpoint_revision(checkpoint_dir: Path) -> str | None:
@@ -355,7 +355,7 @@ def _copy_checkpoint_assets(checkpoint_dir: Path, output_dir: Path) -> list[str]
     return copied
 
 
-def _export_qwen35(
+def _export_qwen(
     checkpoint_dir: Path,
     output_dir: Path,
     image_path: Path,
@@ -836,8 +836,11 @@ def export_onnx(
     inspection: dict[str, Any],
 ) -> None:
     """Export a supported LightOnOCR full-attention checkpoint to ONNX."""
-    if inspection["architecture"]["family"] == "qwen3_5_hybrid":
-        _export_qwen35(checkpoint_dir, output_dir, image_path, inspection)
+    if (
+        inspection["architecture"]["inference_architecture"]
+        == InferenceArchitecture.QWEN.value
+    ):
+        _export_qwen(checkpoint_dir, output_dir, image_path, inspection)
         return
     import torch
     import numpy as np

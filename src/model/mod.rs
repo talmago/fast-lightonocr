@@ -16,19 +16,22 @@ pub use metadata::{Activation, DataType, ModelType, RopeParameters, RopeType};
 pub use vision_encoder::{ImageFeatures, ImageTensor};
 
 // Vision encoder
-pub use vision_encoder::{VisionConfig, VisionEncoder};
+pub use vision_encoder::{PixtralVisionEncoder, QwenVisionEncoder, VisionConfig};
 
 // Token embedding
 pub use embedding_model::{EmbeddingConfig, EmbeddingModel};
 
 // Decoder and generation
 pub use decoder::{
-    Decoder, DecoderConfig, FinishReason, GenerationConfig, GenerationOutput, KVCache, LayerCache,
+    DecoderConfig, FinishReason, GenerationConfig, GenerationOutput, KVCache, LayerCache,
+    PixtralDecoder, QwenDecoder, QwenLayerType,
 };
 
 // High-level OCR pipeline
 pub use crate::util::{ExecutionProvider, RuntimeOptions};
-pub use pipeline::{LightOnOCR, LightOnOCROptions, OCRResult, StageTimings};
+pub use pipeline::{
+    InferenceArchitecture, InferenceBackend, LightOnOCR, LightOnOCROptions, OCRResult, StageTimings,
+};
 
 /// Backward-compatible alias for [`vision_encoder`].
 #[deprecated(note = "use model::vision_encoder instead")]

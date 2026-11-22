@@ -4,7 +4,9 @@ use std::process::Command;
 use fast_lightonocr::Error;
 use fast_lightonocr::Result;
 use fast_lightonocr::model::Logits;
-use fast_lightonocr::model::decoder::{Decoder, DecoderConfig, KVCache, LayerCache, LayerType};
+use fast_lightonocr::model::decoder::{
+    DecoderConfig, KVCache, LayerCache, LayerType, PixtralDecoder,
+};
 use fast_lightonocr::model::{AttentionMask, InputEmbeddings};
 use fast_lightonocr::model::{DataType, ModelType};
 use serde::Deserialize;
@@ -16,9 +18,9 @@ fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn decoder_from_file(path: impl AsRef<Path>) -> Result<Decoder> {
+fn decoder_from_file(path: impl AsRef<Path>) -> Result<PixtralDecoder> {
     let directory = path.as_ref();
-    Decoder::from_model_path(directory.join("onnx/decoder_model_merged_q4.onnx"))
+    PixtralDecoder::from_model_path(directory.join("onnx/decoder_model_merged_q4.onnx"))
 }
 
 #[test]

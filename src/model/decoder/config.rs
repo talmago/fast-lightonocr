@@ -11,6 +11,15 @@ use crate::util::json::load_json_file;
 /// Default maximum number of tokens generated in a single inference request.
 pub const DEFAULT_MAX_NEW_TOKENS: usize = 512;
 
+/// EOS id used when a Qwen `generation_config.json` omits `eos_token_id`.
+///
+/// This is the LightOnOCR-3-0.8B / 4B vocabulary EOS, not the Pixtral 151645 id.
+const QWEN_DEFAULT_EOS_TOKEN_ID: i64 = 248_046;
+/// Pad id used when a Qwen `generation_config.json` omits `pad_token_id`.
+const QWEN_DEFAULT_PAD_TOKEN_ID: i64 = 248_044;
+/// Sampling temperature used when Qwen generation config omits `temperature`.
+const QWEN_DEFAULT_TEMPERATURE: f32 = 0.2;
+
 /// Generation configuration.
 ///
 /// Most fields are loaded from Hugging Face's `generation_config.json`.
@@ -69,6 +78,55 @@ impl GenerationConfig {
         let mut config: Self = load_json_file(path)?;
         config.max_new_tokens = DEFAULT_MAX_NEW_TOKENS;
         Ok(config)
+    }
+
+    /// Builds the sparse-generation defaults used by exported Qwen OCR
+    /// checkpoints. Missing sampling values resolve to deterministic decoding.
+    pub(crate) fn from_qwen_file(path: impl AsRef<Path>) -> Result<Self> {
+        let value: serde_json::Value = load_json_file(path)?;
+        let eos_token_ids = match value.get("eos_token_id") {
+            Some(serde_json::Value::Number(number)) => number.as_i64().into_iter().collect(),
+            Some(serde_json::Value::Array(ids)) => {
+                ids.iter().filter_map(|id| id.as_i64()).collect()
+            }
+            _ => vec![QWEN_DEFAULT_EOS_TOKEN_ID],
+        };
+        Ok(Self {
+            max_new_tokens: DEFAULT_MAX_NEW_TOKENS,
+            bos_token_id: value
+                .get("bos_token_id")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+            do_sample: value
+                .get("do_sample")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            eos_token_ids,
+            pad_token_id: value
+                .get("pad_token_id")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(QWEN_DEFAULT_PAD_TOKEN_ID),
+            temperature: value
+                .get("temperature")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(QWEN_DEFAULT_TEMPERATURE as f64) as f32,
+            top_k: value
+                .get("top_k")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as u32,
+            top_p: value
+                .get("top_p")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(1.0) as f32,
+            transformers_version: value
+                .get("transformers_version")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            trust_remote_code: value
+                .get("trust_remote_code")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        })
     }
 
     /// Sets the maximum number of new tokens to generate.
@@ -215,5 +273,24 @@ where
     match TokenIds::deserialize(deserializer)? {
         TokenIds::Single(token_id) => Ok(vec![token_id]),
         TokenIds::Multiple(token_ids) => Ok(token_ids),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn from_qwen_file_fills_sparse_sampling_defaults() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/qwen_generation_config.json");
+        let config = GenerationConfig::from_qwen_file(path).unwrap();
+        assert_eq!(config.eos_token_ids, vec![248_046]);
+        assert_eq!(config.pad_token_id, 248_044);
+        assert!(!config.do_sample);
+        assert!((config.temperature - 0.2).abs() < f32::EPSILON);
+        assert_eq!(config.top_k, 0);
+        assert_eq!(config.max_new_tokens, DEFAULT_MAX_NEW_TOKENS);
     }
 }

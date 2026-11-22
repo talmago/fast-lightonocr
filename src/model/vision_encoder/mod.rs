@@ -8,8 +8,10 @@ mod config;
 mod encoder;
 mod input;
 mod output;
+mod qwen;
 
 pub use config::VisionConfig;
-pub use encoder::VisionEncoder;
+pub use encoder::PixtralVisionEncoder;
 pub use input::ImageTensor;
 pub use output::ImageFeatures;
+pub use qwen::QwenVisionEncoder;

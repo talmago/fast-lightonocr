@@ -15,11 +15,11 @@ const VISION_OUTPUT_NAME: &str = "image_features";
 
 /// ONNX Runtime wrapper for the exported LightOnOCR vision encoder.
 ///
-/// `VisionEncoder` owns exactly one ONNX Runtime session. It accepts typed
+/// `PixtralVisionEncoder` owns exactly one ONNX Runtime session. It accepts typed
 /// [`ImageTensor`] in NCHW layout and returns typed [`ImageFeatures`], keeping
 /// ONNX Runtime values private to this module.
 #[derive(Debug)]
-pub struct VisionEncoder {
+pub struct PixtralVisionEncoder {
     session: Session,
     config: VisionConfig,
     model_path: PathBuf,
@@ -27,7 +27,7 @@ pub struct VisionEncoder {
     output_scratch: ImageFeatures,
 }
 
-impl VisionEncoder {
+impl PixtralVisionEncoder {
     /// Loads a vision encoder from an explicit ONNX model path and config.
     ///
     /// This is useful for tests and tools that already resolved the model

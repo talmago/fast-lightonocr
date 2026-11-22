@@ -26,6 +26,10 @@ pub enum ModelType {
     /// Pixtral vision encoder and processor family.
     #[serde(rename = "pixtral")]
     Pixtral,
+
+    /// Qwen text decoder family.
+    #[serde(rename = "qwen3_5_text")]
+    QwenText,
 }
 
 /// Numeric data types declared by exported model metadata.
